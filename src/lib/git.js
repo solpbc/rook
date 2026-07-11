@@ -212,6 +212,21 @@ export async function currentBranch(cwd, dependencies = {}) {
 	return branch;
 }
 
+export async function validateBranchName(cwd, branch, dependencies = {}) {
+	if (typeof branch !== "string" || branch.length === 0) {
+		throw new RookError("Git branch name is invalid", { code: "branch-invalid" });
+	}
+	const result = await executeGit(
+		["check-ref-format", `refs/heads/${branch}`],
+		{ cwd, allowFailure: true },
+		dependencies,
+	);
+	if (result.status !== 0) {
+		throw new RookError("Git branch name is invalid", { code: "branch-invalid" });
+	}
+	return branch;
+}
+
 export async function remoteHeadBranch(cwd, remote, dependencies = {}) {
 	const result = await executeGit(
 		["symbolic-ref", "-q", "--short", `refs/remotes/${remote}/HEAD`],

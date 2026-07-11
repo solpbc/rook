@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createProgram } from "../src/cli.js";
 import { doctor, doctorOverall } from "../src/cmd/doctor.js";
+import { resolveGitCommonDir } from "../src/lib/git.js";
 import { writeIdentity } from "../src/lib/identity.js";
 import { deriveIdentityPaths } from "../src/lib/paths.js";
+import { writeRepoState } from "../src/lib/repo-state.js";
 import { atomicWriteFile } from "../src/lib/storage.js";
-import { memoryStream, temporaryHome, testIdentity } from "./helpers.js";
+import { memoryStream, temporaryGitRepository, temporaryHome, testIdentity } from "./helpers.js";
 
 async function setupDoctor(t, overrides = {}) {
 	const home = await temporaryHome();
@@ -55,6 +57,43 @@ async function setupDoctor(t, overrides = {}) {
 	return { dependencies, identity, metadata, scope };
 }
 
+async function setupConfiguredDoctor(t, overrides = {}) {
+	const setup = await setupDoctor(t, overrides);
+	const repository = await temporaryGitRepository();
+	t.after(repository.cleanup);
+	const base = await repository.commit({ message: "base" });
+	await repository.run(["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+	await repository.run(["update-ref", "refs/remotes/origin/main", base]);
+	const tip = await repository.commit({
+		message: "outgoing",
+		authorEmail: setup.identity.did,
+		committerEmail: setup.identity.did,
+	});
+	const repoDid = "did:plc:y4n6knl55l5bcoazo6qki4iu";
+	const rookRemoteUrl = `https://knot.invalid/${repoDid}`;
+	await repository.run(["remote", "add", "rook", rookRemoteUrl]);
+	const gitCommonDir = await resolveGitCommonDir(repository.directory, { env: repository.env });
+	const state = {
+		upstreamUrl: "https://github.com/owner/repo.git",
+		upstreamDefaultBranch: "main",
+		knotRepoName: "repo",
+		knotRepoDid: repoDid,
+		rookRemoteUrl,
+		...(overrides.pushProof === false
+			? {}
+			: {
+					lastPushedBranch: "main",
+					lastPushedTip: overrides.staleTip ? "a".repeat(40) : tip,
+				}),
+	};
+	await writeRepoState(gitCommonDir, state);
+	setup.dependencies.cwd = repository.directory;
+	setup.dependencies.receivePackAdvertisement =
+		overrides.receivePackAdvertisement ?? (async () => ({ ok: true }));
+	setup.dependencies.lsRemoteRef = overrides.lsRemoteRef ?? (async () => tip);
+	return { ...setup, repository, tip, gitCommonDir };
+}
+
 async function runDoctorCommand(dependencies) {
 	const stdout = memoryStream();
 	const stderr = memoryStream();
@@ -66,19 +105,58 @@ async function runDoctorCommand(dependencies) {
 	return { exitCode, result: JSON.parse(stdout.toString()), stderr: stderr.toString() };
 }
 
-test("doctor earns all identity/auth checks and reports unknown session expiry truthfully", async (t) => {
+test("identity/auth-only doctor remains not_checked and names rook push", async (t) => {
 	const { dependencies } = await setupDoctor(t);
 	const result = await doctor({}, dependencies);
 	assert.equal(result.overall.status, "not_checked");
-	assert.equal(result.checks.at(-1).name, "repository-push");
+	assert.equal(result.checks.at(-1).name, "repository-push-proof");
 	assert.equal(result.checks.at(-1).status, "not_checked");
-	assert.equal(result.checks.at(-1).detail, "repository push has not been checked yet");
+	assert.equal(result.checks.at(-1).recovery, "run rook push");
 	assert.equal(result.checks.filter(({ status }) => status === "ok").length, 8);
 	assert.match(
 		result.checks.find(({ name }) => name === "session-restore-expiry").detail,
 		/expired=unknown/,
 	);
 	assert.doesNotMatch(JSON.stringify(result), /service-auth-secret/);
+	assert.equal((await runDoctorCommand(dependencies)).exitCode, 1);
+});
+
+test("doctor is green only for a configured clone with live remote equality", async (t) => {
+	const setup = await setupConfiguredDoctor(t);
+	const result = await doctor({}, setup.dependencies);
+	assert.equal(result.overall.status, "ok");
+	for (const name of [
+		"repository-state",
+		"rook-remote",
+		"branch-provenance",
+		"receive-pack-advertisement",
+		"repository-push-proof",
+	]) {
+		assert.equal(result.checks.find((item) => item.name === name).status, "ok");
+	}
+	assert.equal((await runDoctorCommand(setup.dependencies)).exitCode, 0);
+});
+
+test("advertisement access without a current saved push proof is never green", async (t) => {
+	const setup = await setupConfiguredDoctor(t, { pushProof: false });
+	const result = await doctor({}, setup.dependencies);
+	assert.equal(
+		result.checks.find(({ name }) => name === "receive-pack-advertisement").status,
+		"ok",
+	);
+	const proof = result.checks.find(({ name }) => name === "repository-push-proof");
+	assert.equal(proof.status, "not_checked");
+	assert.equal(proof.recovery, "run rook push");
+	assert.equal(result.overall.status, "not_checked");
+});
+
+test("doctor rejects a stale saved tip and names rook push", async (t) => {
+	const setup = await setupConfiguredDoctor(t, { staleTip: true });
+	const result = await doctor({}, setup.dependencies);
+	const proof = result.checks.find(({ name }) => name === "repository-push-proof");
+	assert.equal(proof.status, "fail");
+	assert.equal(proof.recovery, "run rook push");
+	assert.equal(result.overall.status, "fail");
 });
 
 test("doctor maps 403 InsufficientScope to failed service-auth checks naming scopes", async (t) => {
@@ -123,7 +201,7 @@ test("doctor degrades malformed knot pages and fails exhaustive DID absence", as
 });
 
 test("doctor command exits 0 only for earned checks and 1 for degraded or failed checks", async (t) => {
-	const healthy = await setupDoctor(t);
+	const healthy = await setupConfiguredDoctor(t);
 	assert.equal((await runDoctorCommand(healthy.dependencies)).exitCode, 0);
 	const degraded = await setupDoctor(t, {
 		verifyHandleDid: async () => {
@@ -139,7 +217,7 @@ test("doctor status ranks fail above degraded and unchecked", () => {
 	const result = doctorOverall([
 		{ name: "one", status: "degraded" },
 		{ name: "two", status: "fail" },
-		{ name: "repository-push", status: "not_checked" },
+		{ name: "three", status: "not_checked" },
 	]);
 	assert.equal(result.status, "fail");
 });

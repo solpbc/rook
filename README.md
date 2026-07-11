@@ -10,10 +10,11 @@
 - `rook login` restores or establishes a headless OAuth session.
 - `rook fork <upstream-repo-url>` creates or adopts the rook-owned knot repository for the current
   clone. Non-secret state lives in the Git metadata directory, and reruns adopt existing work.
+- `rook push [branch]` pushes commits with exact rook DID provenance and saves proof only after the
+  authenticated remote branch equals the local tip.
 - `rook whoami` reports the selected local identity and whether local session material exists. It
   does not verify the session over the network.
-- `rook doctor` performs read-only identity and authentication checks. Repository push readiness has
-  not been checked yet.
+- `rook doctor` performs read-only identity, authentication, and repository push-readiness checks.
 
 Each command accepts `--json` for one structured JSON result on stdout. Human progress moves to
 stderr while JSON mode is active.
