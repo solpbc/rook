@@ -1,6 +1,6 @@
 {
 	"name": "@solpbc/rook",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "the end-to-end workflow tool for rooks",
 	"license": "AGPL-3.0-only",
 	"type": "module",
@@ -32,7 +32,7 @@
 		"@atproto/oauth-client-node": "0.3.16",
 		"commander": "^13.0.0",
 		"env-paths": "4.0.0",
-		"vit": "0.6.0"
+		"vit": "0.6.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "1.9.4"
