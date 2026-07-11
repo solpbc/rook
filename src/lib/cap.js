@@ -2,6 +2,8 @@
 
 import { publishCap } from "vit/cap.js";
 import { RookError } from "./error-format.js";
+import { withTimeout } from "./network.js";
+import { resolvePdsEndpoint } from "./pds.js";
 import { listAllRecords } from "./records.js";
 
 export const CAP_COLLECTION = "org.v-it.cap";
@@ -18,6 +20,19 @@ function validDid(value) {
 
 function plainObject(value) {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function responseJson(response) {
+	try {
+		return await response.json();
+	} catch {
+		return undefined;
+	}
+}
+
+function recordEndpoint(nsid, params) {
+	const query = new URLSearchParams(params);
+	return `/xrpc/${nsid}?${query}`;
 }
 
 function validRecordKey(value) {
@@ -131,27 +146,42 @@ function parseCapUri(uri) {
 // Strong references for a request reply, resolved from the request's authoritative
 // PDS. Reply parent is the request's current uri/cid; root is its own root when it
 // already belongs to a thread, else the request itself.
-export async function resolveRequestCap(agent, requestUri, _dependencies = {}) {
+export async function resolveRequestCap(requestUri, dependencies = {}) {
 	const parsed = parseCapUri(requestUri);
 	if (!parsed) {
 		throw capError("request cap URI is invalid", "request-cap-unresolved", {
 			remediation: "pass a valid org.v-it.cap at:// URI to --request",
 		});
 	}
+	let pdsOrigin;
+	try {
+		pdsOrigin = await resolvePdsEndpoint(parsed.repo, dependencies);
+	} catch {
+		throw capError("request cap could not be resolved", "request-cap-unresolved");
+	}
 	let response;
 	try {
-		response = await agent.com.atproto.repo.getRecord({
-			repo: parsed.repo,
-			collection: CAP_COLLECTION,
-			rkey: parsed.rkey,
-		});
-	} catch (cause) {
+		const endpoint = new URL(
+			recordEndpoint("com.atproto.repo.getRecord", {
+				repo: parsed.repo,
+				collection: CAP_COLLECTION,
+				rkey: parsed.rkey,
+			}),
+			pdsOrigin,
+		);
+		const fetchImpl = dependencies.fetch ?? globalThis.fetch;
+		response = await fetchImpl(endpoint, withTimeout({}, dependencies));
+	} catch {
 		throw capError("request cap could not be resolved", "request-cap-unresolved", {
 			remediation: "verify the --request cap exists and is reachable",
-			cause,
 		});
 	}
-	const data = response?.data;
+	const data = await responseJson(response);
+	if (response?.status !== 200) {
+		throw capError("request cap could not be resolved", "request-cap-unresolved", {
+			remediation: "verify the --request cap exists and is reachable",
+		});
+	}
 	if (
 		!plainObject(data) ||
 		!plainObject(data.value) ||

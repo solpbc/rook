@@ -214,7 +214,7 @@ export async function shipCore(options, providedContext, dependencies = {}) {
 	let reply;
 	let requestParentUri;
 	if (options.request !== undefined) {
-		const refs = await attempt(() => resolveRequestCap(agent, options.request, dependencies), {
+		const refs = await attempt(() => resolveRequestCap(options.request, dependencies), {
 			stage: "request",
 			code: "request-cap-unresolved",
 			remediation: "verify the --request cap exists and is reachable",

@@ -11,7 +11,9 @@ import {
 } from "../src/lib/cap.js";
 
 const REPO = "did:plc:testrook";
+const REQUESTER = "did:plc:requester0000000000000";
 const CAP = "org.v-it.cap";
+const PDS_ORIGIN = "https://pds.author.example";
 const RENDERED = "https://tangled.org/did:plc:testrook/widget/pulls/5";
 const BEACON = "vit:github.com/owner/widget";
 const EXTERNAL = {
@@ -38,26 +40,40 @@ function capAgent({ records = new Map(), puts = [] } = {}) {
 						puts.push({ rkey, record, swapRecord });
 						return { data: { uri: `at://${repo}/${collection}/${rkey}`, cid } };
 					},
-					getRecord: async ({ repo, collection, rkey }) => {
-						const entry = records.get(rkey);
-						if (!entry) {
-							throw Object.assign(new Error("RecordNotFound"), {
-								status: 400,
-								error: "RecordNotFound",
-							});
-						}
-						return {
-							data: {
-								uri: `at://${repo}/${collection}/${rkey}`,
-								cid: entry.cid,
-								value: entry.value,
-							},
-						};
-					},
 				},
 			},
 		},
 	};
+}
+
+function requestFetch(getRecord, requests = []) {
+	return async (input, init = {}) => {
+		const url = new URL(input);
+		if (url.origin === "https://plc.directory") {
+			assert.equal(url.pathname, `/${encodeURIComponent(REQUESTER)}`);
+			return Response.json({
+				service: [
+					{
+						id: "#atproto_pds",
+						type: "AtprotoPersonalDataServer",
+						serviceEndpoint: PDS_ORIGIN,
+					},
+				],
+			});
+		}
+		if (url.origin === PDS_ORIGIN && url.pathname === "/xrpc/com.atproto.repo.getRecord") {
+			requests.push({ url, init });
+			return getRecord(url, init);
+		}
+		throw new Error(`unexpected request to ${url.origin}`);
+	};
+}
+
+function assertRequestUnresolved(error) {
+	assert.equal(error.code, "request-cap-unresolved");
+	assert.equal(error.cause, undefined);
+	assert.doesNotMatch(error.message, /secret/i);
+	return true;
 }
 
 test("deriveBeacon builds vit beacons from canonical upstream URLs", () => {
@@ -117,44 +133,113 @@ test("capUnchanged detects identical overridable content", () => {
 });
 
 test("resolveRequestCap returns strong parent and root references", async () => {
-	const rootRef = { uri: "at://did:plc:req/org.v-it.cap/root", cid: "bafroot" };
+	const rootRef = { uri: `at://${REQUESTER}/${CAP}/root`, cid: "bafroot" };
 	const records = new Map([
 		["threaded", { cid: "bafparent1", value: { $type: CAP, reply: { root: rootRef } } }],
 		["standalone", { cid: "bafparent2", value: { $type: CAP } }],
 	]);
-	const agent = {
-		com: {
-			atproto: {
-				repo: {
-					getRecord: capAgent({ records }).com.atproto.repo.getRecord,
-				},
-			},
-		},
-	};
+	const requests = [];
+	const fetch = requestFetch((url) => {
+		const rkey = url.searchParams.get("rkey");
+		const entry = records.get(rkey);
+		return Response.json({
+			uri: `at://${REQUESTER}/${CAP}/${rkey}`,
+			cid: entry.cid,
+			value: entry.value,
+		});
+	}, requests);
 
-	const threaded = await resolveRequestCap(agent, `at://${REPO}/${CAP}/threaded`);
-	assert.deepEqual(threaded.parent, { uri: `at://${REPO}/${CAP}/threaded`, cid: "bafparent1" });
+	const threaded = await resolveRequestCap(`at://${REQUESTER}/${CAP}/threaded`, { fetch });
+	assert.deepEqual(threaded.parent, {
+		uri: `at://${REQUESTER}/${CAP}/threaded`,
+		cid: "bafparent1",
+	});
 	assert.deepEqual(threaded.root, rootRef);
 
-	const standalone = await resolveRequestCap(agent, `at://${REPO}/${CAP}/standalone`);
+	const standalone = await resolveRequestCap(`at://${REQUESTER}/${CAP}/standalone`, { fetch });
 	assert.deepEqual(standalone.parent, standalone.root);
 
-	await assert.rejects(
-		resolveRequestCap(agent, `at://${REPO}/${CAP}/missing`),
-		(error) => error.code === "request-cap-unresolved",
-	);
-	await assert.rejects(
-		resolveRequestCap(agent, "not-an-at-uri"),
-		(error) => error.code === "request-cap-unresolved",
-	);
+	assert.equal(requests.length, 2);
+	for (const request of requests) {
+		assert.equal(request.url.origin, PDS_ORIGIN);
+		assert.equal(request.url.pathname, "/xrpc/com.atproto.repo.getRecord");
+		assert.equal(request.url.searchParams.get("repo"), REQUESTER);
+		assert.equal(request.url.searchParams.get("collection"), CAP);
+		assert.ok(["threaded", "standalone"].includes(request.url.searchParams.get("rkey")));
+		assert.equal(new Headers(request.init.headers).has("authorization"), false);
+		assert.ok(request.init.signal instanceof AbortSignal);
+	}
 });
 
-test("resolveRequestCap rejects a non-cap collection", async () => {
-	const records = new Map([["x", { cid: "bafx", value: { $type: "sh.tangled.repo.pull" } }]]);
-	const agent = capAgent({ records });
+test("resolveRequestCap rejects invalid URIs before fetch", async () => {
+	let fetched = false;
 	await assert.rejects(
-		resolveRequestCap(agent, `at://${REPO}/${CAP}/x`),
-		(error) => error.code === "request-cap-unresolved",
+		resolveRequestCap("not-an-at-uri", {
+			fetch: async () => {
+				fetched = true;
+			},
+		}),
+		assertRequestUnresolved,
+	);
+	assert.equal(fetched, false);
+});
+
+test("resolveRequestCap rejects non-cap records", async () => {
+	const requestUri = `at://${REQUESTER}/${CAP}/x`;
+	const fetch = requestFetch(async () =>
+		Response.json({
+			uri: requestUri,
+			cid: "bafx",
+			value: { $type: "sh.tangled.repo.pull" },
+		}),
+	);
+	await assert.rejects(resolveRequestCap(requestUri, { fetch }), assertRequestUnresolved);
+});
+
+test("resolveRequestCap fails closed for public record transport failures", async () => {
+	const requestUri = `at://${REQUESTER}/${CAP}/missing`;
+	for (const getRecord of [
+		async () => Response.json({ error: "RecordNotFound", message: "body secret" }, { status: 400 }),
+		async () =>
+			Response.json({ error: "UpstreamFailure", message: "body secret" }, { status: 503 }),
+		async () => {
+			throw new Error("transport secret");
+		},
+		async () => new Response("malformed secret", { status: 200 }),
+	]) {
+		await assert.rejects(
+			resolveRequestCap(requestUri, { fetch: requestFetch(getRecord) }),
+			assertRequestUnresolved,
+		);
+	}
+});
+
+test("resolveRequestCap fails closed for invalid public record responses", async () => {
+	const requestUri = `at://${REQUESTER}/${CAP}/x`;
+	for (const body of [
+		null,
+		{ uri: requestUri, cid: "bafcid", value: null },
+		{ uri: `at://${REQUESTER}/${CAP}/other`, cid: "bafcid", value: { $type: CAP } },
+		{ uri: requestUri, value: { $type: CAP } },
+		{ uri: requestUri, cid: "", value: { $type: CAP } },
+		{ uri: requestUri, cid: "bafcid", value: { $type: "body secret" } },
+	]) {
+		await assert.rejects(
+			resolveRequestCap(requestUri, {
+				fetch: requestFetch(async () => Response.json(body)),
+			}),
+			assertRequestUnresolved,
+		);
+	}
+});
+
+test("resolveRequestCap translates PDS resolution failures without leaks", async () => {
+	const requestUri = `at://${REQUESTER}/${CAP}/x`;
+	await assert.rejects(
+		resolveRequestCap(requestUri, {
+			fetch: async () => Response.json({ error: "plc secret" }, { status: 503 }),
+		}),
+		assertRequestUnresolved,
 	);
 });
 

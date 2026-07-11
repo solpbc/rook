@@ -19,6 +19,8 @@ const RENDERED = `https://tangled.org/${ROOK_DID}/${REPO_NAME}/pulls/7`;
 const BEACON = "vit:github.com/owner/widget";
 const TITLE = "feature → main";
 const DESCRIPTION = "rook pull for github.com/owner/widget";
+const REQUESTER = "did:plc:requester0000000000000";
+const PDS_ORIGIN = "https://pds.author.example";
 
 const PULL_STATE = {
 	pullUri: PULL_URI,
@@ -35,22 +37,6 @@ function capAgent({ caps, puts }) {
 		com: {
 			atproto: {
 				repo: {
-					getRecord: async ({ repo, collection, rkey }) => {
-						const entry = caps.get(rkey);
-						if (!entry) {
-							throw Object.assign(new Error("RecordNotFound"), {
-								status: 400,
-								error: "RecordNotFound",
-							});
-						}
-						return {
-							data: {
-								uri: `at://${repo}/${collection}/${rkey}`,
-								cid: entry.cid,
-								value: entry.value,
-							},
-						};
-					},
 					listRecords: async ({ repo, collection }) => {
 						const records = [...caps.entries()].map(([rkey, entry]) => ({
 							uri: `at://${repo}/${collection}/${rkey}`,
@@ -73,6 +59,30 @@ function capAgent({ caps, puts }) {
 				},
 			},
 		},
+	};
+}
+
+function requestCapFetch({ requestUri, cid, value, missing = false, requests = [] }) {
+	return async (input, init = {}) => {
+		const url = new URL(input);
+		if (url.origin === "https://plc.directory") {
+			assert.equal(url.pathname, `/${encodeURIComponent(REQUESTER)}`);
+			return Response.json({
+				service: [
+					{
+						id: "#atproto_pds",
+						type: "AtprotoPersonalDataServer",
+						serviceEndpoint: PDS_ORIGIN,
+					},
+				],
+			});
+		}
+		if (url.origin === PDS_ORIGIN && url.pathname === "/xrpc/com.atproto.repo.getRecord") {
+			requests.push({ url, init });
+			if (missing) return Response.json({ error: "RecordNotFound" }, { status: 400 });
+			return Response.json({ uri: requestUri, cid, value });
+		}
+		throw new Error(`unexpected request to ${url.origin}`);
 	};
 }
 
@@ -225,28 +235,34 @@ test("ship refreshes with CAS and preserves the ref when content changes", async
 });
 
 test("ship --request sets strong reply references and creates a reply cap", async (t) => {
-	const requester = "did:plc:requester0000000000000";
-	const requestUri = `at://${requester}/${CAP}/req`;
-	const rootRef = { uri: `at://${requester}/${CAP}/root`, cid: "bafroot00" };
-	const caps = new Map([
-		["req", { cid: "bafreq000", value: { $type: CAP, reply: { root: rootRef } } }],
-	]);
-	const setup = await setupShip(t, { caps });
+	const requestUri = `at://${REQUESTER}/${CAP}/req`;
+	const rootRef = { uri: `at://${REQUESTER}/${CAP}/root`, cid: "bafroot00" };
+	const requests = [];
+	const setup = await setupShip(t);
+	setup.dependencies.fetch = requestCapFetch({
+		requestUri,
+		cid: "bafreq000",
+		value: { $type: CAP, reply: { root: rootRef } },
+		requests,
+	});
 	const result = await ship({ json: true, request: requestUri }, setup.dependencies);
 	assert.equal(result.outcome, "created");
-	const written = setup.puts.find((put) => put.rkey !== "req");
+	const written = setup.puts[0];
 	assert.equal(written.record.reply.parent.uri, requestUri);
 	assert.equal(written.record.reply.parent.cid, "bafreq000");
 	assert.deepEqual(written.record.reply.root, rootRef);
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].url.origin, PDS_ORIGIN);
+	assert.equal(requests[0].url.searchParams.get("repo"), REQUESTER);
+	assert.equal(setup.caps.has("req"), false);
 });
 
 test("ship --request fails before any write when the request cap is missing", async (t) => {
 	const setup = await setupShip(t);
+	const requestUri = `at://${REQUESTER}/${CAP}/missing`;
+	setup.dependencies.fetch = requestCapFetch({ requestUri, missing: true });
 	await assert.rejects(
-		ship(
-			{ json: true, request: `at://did:plc:requester0000000000000/${CAP}/missing` },
-			setup.dependencies,
-		),
+		ship({ json: true, request: requestUri }, setup.dependencies),
 		(error) => error.code === "request-cap-unresolved",
 	);
 	assert.equal(setup.puts.length, 0);
