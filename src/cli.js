@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { Command, CommanderError } from "commander";
 import { register as registerDoctor } from "./cmd/doctor.js";
 import { register as registerEnroll } from "./cmd/enroll.js";
+import { register as registerFork } from "./cmd/fork.js";
 import { register as registerLogin } from "./cmd/login.js";
 import { register as registerWhoami } from "./cmd/whoami.js";
 import { createOutput } from "./lib/json-output.js";
@@ -31,6 +32,7 @@ export function createProgram(dependencies = {}) {
 		.exitOverride();
 	registerEnroll(program, dependencies);
 	registerLogin(program, dependencies);
+	registerFork(program, dependencies);
 	registerWhoami(program, dependencies);
 	registerDoctor(program, dependencies);
 	return program;

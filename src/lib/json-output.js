@@ -7,6 +7,10 @@ function write(stream, value) {
 	stream.write(`${typeof value === "string" ? value : JSON.stringify(redact(value))}\n`);
 }
 
+function writeFormatted(stream, value) {
+	stream.write(`${JSON.stringify(value)}\n`);
+}
+
 export function createOutput(options = {}) {
 	const stdout = options.stdout ?? process.stdout;
 	const stderr = options.stderr ?? process.stderr;
@@ -18,10 +22,13 @@ export function createOutput(options = {}) {
 		},
 		failure(error) {
 			const formatted = formatError(error);
-			if (json) write(stdout, { ok: false, ...formatted });
+			if (json) writeFormatted(stdout, { ok: false, ...formatted });
 			else {
 				const lines = [
 					formatted.error,
+					...(formatted.stage ? [`stage: ${formatted.stage}`] : []),
+					...(formatted.code ? [`code: ${formatted.code}`] : []),
+					...(formatted.remediation ? [`remediation: ${formatted.remediation}`] : []),
 					...(formatted.causes ?? []).map((cause) => `caused by: ${cause}`),
 					...(formatted.hint ? [`hint: ${formatted.hint}`] : []),
 				];

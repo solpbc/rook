@@ -13,6 +13,7 @@ import {
 	tokenInfoFields,
 } from "../lib/oauth.js";
 import { deriveIdentityPaths, resolveIdentityPath } from "../lib/paths.js";
+import { restoreSession } from "../lib/session.js";
 import { LoginStorageTransaction } from "../lib/storage.js";
 import { createAccessToken, createDpopProof, dpopHtu } from "../lib/welcome-mat.js";
 
@@ -60,20 +61,6 @@ function makeClient(metadata, transaction, dependencies) {
 		return dependencies.oauthClientFactory(metadata, transaction.stores);
 	}
 	return createOAuthClient(metadata, transaction.stores, dependencies);
-}
-
-async function restore(identity, metadata, paths, dependencies) {
-	const transaction = await beginTransaction(paths, dependencies);
-	try {
-		const client = makeClient(metadata, transaction, dependencies);
-		const session = await client.restore(identity.did);
-		const info = await session.getTokenInfo(false);
-		validateSession(session, info, identity);
-		return { transaction, session, info };
-	} catch (error) {
-		await transaction.rollback();
-		return { error };
-	}
 }
 
 async function freshLogin(identity, metadata, paths, dependencies) {
@@ -188,8 +175,18 @@ export async function login(options, dependencies = {}) {
 	}
 	const metadata = await fetchClientMetadata(identity.serviceOrigin, dependencies);
 	const paths = deriveIdentityPaths(identityPath);
-	const restored = await restore(identity, metadata, paths, dependencies);
-	if (restored.session) {
+	let restored;
+	try {
+		restored = await (dependencies.restoreSession ?? restoreSession)(
+			identity,
+			metadata,
+			paths,
+			dependencies,
+		);
+	} catch {
+		restored = undefined;
+	}
+	if (restored) {
 		const missing = missingScopes(metadata.scope, restored.info.scope);
 		if (missing.length === 0) {
 			await restored.transaction.promote();

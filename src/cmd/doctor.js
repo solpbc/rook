@@ -5,16 +5,11 @@ import { RookError } from "../lib/error-format.js";
 import { readIdentity } from "../lib/identity.js";
 import { createOutput } from "../lib/json-output.js";
 import { deriveKnotTarget, listKnotMembers } from "../lib/knot.js";
-import { timeoutSignal } from "../lib/network.js";
-import {
-	createOAuthClient,
-	fetchClientMetadata,
-	missingScopes,
-	rpcScopes,
-	tokenInfoFields,
-} from "../lib/oauth.js";
+import { fetchClientMetadata, missingScopes, rpcScopes, tokenInfoFields } from "../lib/oauth.js";
 import { deriveIdentityPaths, resolveIdentityPath } from "../lib/paths.js";
-import { LoginStorageTransaction, fileExists, fileMode } from "../lib/storage.js";
+import { mintServiceAuth } from "../lib/service-auth.js";
+import { restoreSession } from "../lib/session.js";
+import { fileExists, fileMode } from "../lib/storage.js";
 
 const SERVICE_AUTH_CHECKS = [
 	["service-auth-repo-create", "sh.tangled.repo.create"],
@@ -70,29 +65,6 @@ async function inspectPermissions(paths, dependencies) {
 	);
 }
 
-async function restoreSession(identity, metadata, paths, dependencies) {
-	const Transaction = dependencies.LoginStorageTransaction ?? LoginStorageTransaction;
-	const transaction = await new Transaction(paths.sessionPath, paths.statePath, {
-		clock: dependencies.clock,
-		fs: dependencies.fs,
-	}).start();
-	try {
-		const client = dependencies.oauthClientFactory
-			? dependencies.oauthClientFactory(metadata, transaction.stores)
-			: createOAuthClient(metadata, transaction.stores, dependencies);
-		const session = await client.restore(identity.did);
-		const info = await session.getTokenInfo(false);
-		if (session.did !== identity.did || info.sub !== identity.did || info.expired === true) {
-			throw new RookError("stored session is invalid or expired");
-		}
-		await transaction.promote();
-		return { session, info };
-	} catch (error) {
-		await transaction.rollback();
-		throw error;
-	}
-}
-
 async function serviceAuthCheck(name, nsid, context, dependencies) {
 	if (!context.session || !context.knot)
 		return check(name, "not_checked", "prerequisites were not earned");
@@ -106,34 +78,25 @@ async function serviceAuthCheck(name, nsid, context, dependencies) {
 			`served client metadata is missing the ${nsid} RPC scope`,
 			"run rook login",
 		);
-	const now = Math.floor((dependencies.clock?.() ?? Date.now()) / 1000);
-	const url = new URL("/xrpc/com.atproto.server.getServiceAuth", context.identity.serviceOrigin);
-	url.searchParams.set("aud", context.knot.aud);
-	url.searchParams.set("lxm", nsid);
-	url.searchParams.set("exp", String(now + 60));
-	let response;
 	try {
-		response = await context.session.fetchHandler(url.toString(), {
-			signal: timeoutSignal(dependencies),
-		});
-	} catch {
+		await (dependencies.mintServiceAuth ?? mintServiceAuth)(
+			context.session,
+			{
+				serviceOrigin: context.identity.serviceOrigin,
+				aud: context.knot.aud,
+				lxm: nsid,
+			},
+			dependencies,
+		);
+		return check(name, "ok", `service authorization for ${nsid} can be minted read-only`);
+	} catch (error) {
+		if (error?.code === "service-auth-rejected") {
+			return error.message === "OAuth session was rejected"
+				? check(name, "fail", "OAuth session was rejected", "run rook login")
+				: check(name, "fail", `missing required scope ${expected}`, "run rook login");
+		}
 		return check(name, "degraded", "could not mint service authorization");
 	}
-	let body;
-	try {
-		body = await response.json();
-	} catch {
-		body = undefined;
-	}
-	if (response.status === 200 && typeof body?.token === "string") {
-		return check(name, "ok", `service authorization for ${nsid} can be minted read-only`);
-	}
-	if (response.status === 403 && body?.error === "InsufficientScope") {
-		return check(name, "fail", `missing required scope ${expected}`, "run rook login");
-	}
-	if (response.status === 401)
-		return check(name, "fail", "OAuth session was rejected", "run rook login");
-	return check(name, "degraded", "could not mint service authorization");
 }
 
 export async function doctor(options, dependencies = {}) {
@@ -218,7 +181,19 @@ export async function doctor(options, dependencies = {}) {
 		);
 	} else {
 		try {
-			({ session, info } = await restoreSession(identity, metadata, paths, dependencies));
+			const restored = await (dependencies.restoreSession ?? restoreSession)(
+				identity,
+				metadata,
+				paths,
+				dependencies,
+			);
+			try {
+				await restored.transaction.promote();
+			} catch (error) {
+				await restored.transaction.rollback();
+				throw error;
+			}
+			({ session, info } = restored);
 			const fields = tokenInfoFields(info);
 			checks.push(
 				check(

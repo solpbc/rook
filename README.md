@@ -8,6 +8,8 @@
 - `rook enroll --invite <url> --handle <name>` enrolls a new identity. Both options are required;
   the handle is a single name without dots.
 - `rook login` restores or establishes a headless OAuth session.
+- `rook fork <upstream-repo-url>` creates or adopts the rook-owned knot repository for the current
+  clone. Non-secret state lives in the Git metadata directory, and reruns adopt existing work.
 - `rook whoami` reports the selected local identity and whether local session material exists. It
   does not verify the session over the network.
 - `rook doctor` performs read-only identity and authentication checks. Repository push readiness has
