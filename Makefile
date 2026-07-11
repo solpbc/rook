@@ -1,16 +1,22 @@
-.PHONY: install test ci format clean
+.PHONY: install format lint check test ci clean
 
 install:
 	npm install
 
+format:
+	npm run format
+
+lint:
+	npm run lint
+
+check:
+	npm run check
+
 test:
-	npm test
+	npm run test
 
 ci:
-	npm test
-
-format:
-	@true
+	npm run ci
 
 clean:
 	rm -rf node_modules coverage

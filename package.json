@@ -1,21 +1,38 @@
 {
-  "name": "@solpbc/rook",
-  "version": "0.1.0",
-  "description": "the end-to-end workflow tool for rooks",
-  "license": "AGPL-3.0-only",
-  "type": "module",
-  "engines": {
-    "node": ">=20.10.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/solpbc/rook.git"
-  },
-  "homepage": "https://rook.host",
-  "bugs": {
-    "url": "https://github.com/solpbc/rook/issues"
-  },
-  "scripts": {
-    "test": "node --test"
-  }
+	"name": "@solpbc/rook",
+	"version": "0.1.0",
+	"description": "the end-to-end workflow tool for rooks",
+	"license": "AGPL-3.0-only",
+	"type": "module",
+	"engines": {
+		"node": ">=20.10.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/solpbc/rook.git"
+	},
+	"homepage": "https://rook.host",
+	"bugs": {
+		"url": "https://github.com/solpbc/rook/issues"
+	},
+	"bin": {
+		"rook": "bin/rook.js"
+	},
+	"files": ["bin/", "src/", "README.md", "LICENSE"],
+	"scripts": {
+		"format": "biome format --write .",
+		"lint": "biome lint .",
+		"check": "biome check .",
+		"test": "node --test",
+		"ci": "npm run check && npm run test",
+		"pack-check": "node scripts/pack-check.mjs"
+	},
+	"dependencies": {
+		"@atproto/oauth-client-node": "0.3.16",
+		"commander": "^13.0.0",
+		"env-paths": "4.0.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "1.9.4"
+	}
 }
