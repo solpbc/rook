@@ -49,6 +49,7 @@ const requiredFiles = [
 	"src/lib/redact.js",
 	"src/lib/json-output.js",
 	"src/lib/error-format.js",
+	"src/lib/network.js",
 ];
 for (const required of requiredFiles) {
 	if (!paths.includes(required)) throw new Error(`packed tarball is missing ${required}`);

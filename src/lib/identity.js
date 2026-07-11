@@ -2,7 +2,7 @@
 
 import { createPrivateKey } from "node:crypto";
 import { RookError } from "./error-format.js";
-import { atomicWriteFile, readJsonFile } from "./storage.js";
+import { atomicCreateFile, readJsonFile } from "./storage.js";
 
 function requiredString(value, name) {
 	if (typeof value !== "string" || value.length === 0)
@@ -84,7 +84,7 @@ export async function readIdentity(identityPath) {
 
 export async function writeIdentity(identityPath, identity) {
 	const valid = validateIdentity(identity);
-	await atomicWriteFile(identityPath, `${JSON.stringify(valid, null, 2)}\n`);
+	await atomicCreateFile(identityPath, `${JSON.stringify(valid, null, 2)}\n`);
 }
 
 export function publicIdentity(identity, identityPath) {

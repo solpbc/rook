@@ -5,6 +5,7 @@ import { fetchTos } from "../lib/discovery.js";
 import { RookError } from "../lib/error-format.js";
 import { readIdentity } from "../lib/identity.js";
 import { createOutput } from "../lib/json-output.js";
+import { withTimeout } from "../lib/network.js";
 import {
 	createOAuthClient,
 	fetchClientMetadata,
@@ -87,7 +88,7 @@ async function freshLogin(identity, metadata, paths, dependencies) {
 		const authorizationUrl = new URL(authorization);
 		let previewResponse;
 		try {
-			previewResponse = await fetchImpl(authorizationUrl);
+			previewResponse = await fetchImpl(authorizationUrl, withTimeout({}, dependencies));
 		} catch {
 			throw new RookError("could not fetch authorization consent preview");
 		}
@@ -101,7 +102,7 @@ async function freshLogin(identity, metadata, paths, dependencies) {
 			throw new RookError("authorization consent preview returned malformed JSON");
 		}
 		validatePreview(preview, metadata, identity);
-		const tosText = await fetchTos(identity.serviceOrigin, fetchImpl);
+		const tosText = await fetchTos(identity.serviceOrigin, fetchImpl, dependencies);
 		const wmJwt = createAccessToken(
 			{
 				tosText,
@@ -123,10 +124,16 @@ async function freshLogin(identity, metadata, paths, dependencies) {
 		);
 		let consentResponse;
 		try {
-			consentResponse = await fetchImpl(authorizationUrl, {
-				redirect: "manual",
-				headers: { Authorization: `DPoP ${wmJwt}`, DPoP: dpop },
-			});
+			consentResponse = await fetchImpl(
+				authorizationUrl,
+				withTimeout(
+					{
+						redirect: "manual",
+						headers: { Authorization: `DPoP ${wmJwt}`, DPoP: dpop },
+					},
+					dependencies,
+				),
+			);
 		} catch {
 			throw new RookError("authorization consent request failed");
 		}

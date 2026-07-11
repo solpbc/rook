@@ -5,6 +5,7 @@ import { RookError } from "../lib/error-format.js";
 import { readIdentity } from "../lib/identity.js";
 import { createOutput } from "../lib/json-output.js";
 import { deriveKnotTarget, listKnotMembers } from "../lib/knot.js";
+import { timeoutSignal } from "../lib/network.js";
 import {
 	createOAuthClient,
 	fetchClientMetadata,
@@ -32,28 +33,24 @@ function overall(checks) {
 	if (checks.some(({ status }) => status === "fail")) {
 		return {
 			status: "fail",
-			verdict:
-				"identity/auth diagnostics failed; repository push readiness not checked (deferred to git-workflow lode)",
+			verdict: "identity/auth diagnostics failed; repository push has not been checked yet",
 		};
 	}
 	if (checks.some(({ status }) => status === "degraded")) {
 		return {
 			status: "degraded",
-			verdict:
-				"identity/auth diagnostics degraded; repository push readiness not checked (deferred to git-workflow lode)",
+			verdict: "identity/auth diagnostics degraded; repository push has not been checked yet",
 		};
 	}
 	if (checks.some(({ name, status }) => name !== "repository-push" && status === "not_checked")) {
 		return {
 			status: "not_checked",
-			verdict:
-				"identity/auth diagnostics incomplete; repository push readiness not checked (deferred to git-workflow lode)",
+			verdict: "identity/auth diagnostics incomplete; repository push has not been checked yet",
 		};
 	}
 	return {
 		status: "not_checked",
-		verdict:
-			"identity/auth checks passed; repository push readiness not checked (deferred to git-workflow lode)",
+		verdict: "identity/auth checks passed; repository push has not been checked yet",
 	};
 }
 
@@ -116,7 +113,9 @@ async function serviceAuthCheck(name, nsid, context, dependencies) {
 	url.searchParams.set("exp", String(now + 60));
 	let response;
 	try {
-		response = await context.session.fetchHandler(url.toString());
+		response = await context.session.fetchHandler(url.toString(), {
+			signal: timeoutSignal(dependencies),
+		});
 	} catch {
 		return check(name, "degraded", "could not mint service authorization");
 	}
@@ -168,6 +167,7 @@ export async function doctor(options, dependencies = {}) {
 			const matches = await (dependencies.verifyHandleDid ?? verifyHandleDid)(
 				identity,
 				dependencies.fetch,
+				dependencies,
 			);
 			checks.push(
 				matches
@@ -224,7 +224,7 @@ export async function doctor(options, dependencies = {}) {
 				check(
 					"session-restore-expiry",
 					"ok",
-					`OAuth session is restorable; expiresAt=${fields.expiresAt ?? "unspecified"}; expired=false`,
+					`OAuth session is restorable; expiresAt=${fields.expiresAt ?? "unspecified"}; expired=${fields.expired}`,
 				),
 			);
 		} catch {
@@ -290,7 +290,7 @@ export async function doctor(options, dependencies = {}) {
 	for (const [name, nsid] of SERVICE_AUTH_CHECKS) {
 		checks.push(await serviceAuthCheck(name, nsid, context, dependencies));
 	}
-	checks.push(check("repository-push", "not_checked", "deferred to git-workflow lode"));
+	checks.push(check("repository-push", "not_checked", "repository push has not been checked yet"));
 	return { ok: true, overall: overall(checks), checks };
 }
 
@@ -305,7 +305,12 @@ export function register(program, dependencies = {}) {
 				const result = await doctor(command.optsWithGlobals(), dependencies);
 				const { ok: _ok, ...fields } = result;
 				const human = [
-					...result.checks.map(({ name, status, detail }) => `${name}: ${status} — ${detail}`),
+					...result.checks.flatMap(({ name, status, detail, recovery }) => [
+						`${name}: ${status} — ${detail}`,
+						...(recovery && (status === "fail" || status === "degraded")
+							? [`  recovery: ${recovery}`]
+							: []),
+					]),
 					result.overall.verdict,
 				].join("\n");
 				output.success(fields, human);

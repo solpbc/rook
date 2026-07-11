@@ -21,8 +21,13 @@ export async function listKnotMembers(target, options = {}) {
 	const fetchImpl = options.fetch ?? globalThis.fetch;
 	const members = new Set();
 	const cursors = new Set();
+	const clock = options.clock ?? (() => Date.now());
+	const deadline = clock() + (options.overallTimeoutMs ?? 30_000);
+	const maxResponseBytes = options.maxResponseBytes ?? 2_000_000;
 	let cursor;
 	for (let page = 0; page < (options.maxPages ?? 1000); page += 1) {
+		const remaining = deadline - clock();
+		if (remaining <= 0) throw new RookError("could not verify membership");
 		const url = new URL("/xrpc/sh.tangled.knot.listMembers", target.origin);
 		url.searchParams.set("subject", target.subject);
 		url.searchParams.set("limit", "1000");
@@ -30,15 +35,20 @@ export async function listKnotMembers(target, options = {}) {
 		if (cursor) url.searchParams.set("cursor", cursor);
 		let response;
 		try {
+			const deadlineSignal = AbortSignal.timeout(Math.min(options.timeoutMs ?? 10_000, remaining));
 			response = await fetchImpl(url, {
-				signal: options.signal ?? AbortSignal.timeout(options.timeoutMs ?? 10_000),
+				signal: options.signal ? AbortSignal.any([options.signal, deadlineSignal]) : deadlineSignal,
 			});
 		} catch {
 			throw new RookError("could not verify membership");
 		}
 		if (!response.ok) throw new RookError("could not verify membership");
+		const contentLength = response.headers.get("content-length");
+		if (contentLength !== null && Number(contentLength) > maxResponseBytes) {
+			throw new RookError("could not verify membership");
+		}
 		const text = await response.text();
-		if (text.length > (options.maxResponseBytes ?? 2_000_000)) {
+		if (Buffer.byteLength(text, "utf8") > maxResponseBytes) {
 			throw new RookError("could not verify membership");
 		}
 		let body;

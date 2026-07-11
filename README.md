@@ -10,8 +10,8 @@
 - `rook login` restores or establishes a headless OAuth session.
 - `rook whoami` reports the selected local identity and whether local session material exists. It
   does not verify the session over the network.
-- `rook doctor` performs read-only identity and authentication checks. Repository push readiness is
-  always reported as not checked and deferred to the git workflow.
+- `rook doctor` performs read-only identity and authentication checks. Repository push readiness has
+  not been checked yet.
 
 Each command accepts `--json` for one structured JSON result on stdout. Human progress moves to
 stderr while JSON mode is active.

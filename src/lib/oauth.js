@@ -2,6 +2,7 @@
 
 import { NodeOAuthClient, requestLocalLock } from "@atproto/oauth-client-node";
 import { RookError } from "./error-format.js";
+import { timeoutFetch, timeoutSignal } from "./network.js";
 
 export function scopeSet(scope) {
 	if (typeof scope !== "string") return new Set();
@@ -29,7 +30,11 @@ export async function fetchClientMetadata(serviceOrigin, options = {}) {
 	const Client = options.NodeOAuthClient ?? NodeOAuthClient;
 	let metadata;
 	try {
-		metadata = await Client.fetchMetadata({ clientId, fetch: options.fetch ?? globalThis.fetch });
+		metadata = await Client.fetchMetadata({
+			clientId,
+			fetch: timeoutFetch(options.fetch, options),
+			signal: timeoutSignal(options),
+		});
 	} catch {
 		throw new RookError("could not fetch valid OAuth client metadata");
 	}
@@ -49,7 +54,7 @@ export function createOAuthClient(metadata, stores, options = {}) {
 		clientMetadata: metadata,
 		stateStore: stores.stateStore,
 		sessionStore: stores.sessionStore,
-		fetch: options.fetch ?? globalThis.fetch,
+		fetch: timeoutFetch(options.fetch, options),
 		requestLock: options.requestLock ?? requestLocalLock,
 	});
 }
@@ -60,5 +65,6 @@ export function tokenInfoFields(info) {
 			? info.expiresAt.toISOString()
 			: new Date(info.expiresAt).toISOString()
 		: null;
-	return { scope: info.scope, expiresAt, expired: info.expired === true, sub: info.sub };
+	const expired = info.expired === undefined ? "unknown" : info.expired === true;
+	return { scope: info.scope, expiresAt, expired, sub: info.sub };
 }

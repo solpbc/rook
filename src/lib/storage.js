@@ -13,7 +13,7 @@ async function ensureDirectory(filePath, fsOps) {
 	await fsOps.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
 }
 
-export async function atomicWriteFile(filePath, data, fsOps = fs) {
+async function createTemporaryFile(filePath, data, fsOps) {
 	await ensureDirectory(filePath, fsOps);
 	const counter = ++temporaryCounter;
 	const temporaryPath = path.join(
@@ -28,12 +28,33 @@ export async function atomicWriteFile(filePath, data, fsOps = fs) {
 		if (typeof handle.sync === "function") await handle.sync();
 		await handle.close();
 		handle = undefined;
-		await fsOps.rename(temporaryPath, filePath);
+		return temporaryPath;
 	} catch (error) {
 		if (handle) await handle.close().catch(() => {});
 		await fsOps.unlink(temporaryPath).catch(() => {});
 		throw error;
 	}
+}
+
+export async function atomicWriteFile(filePath, data, fsOps = fs) {
+	const temporaryPath = await createTemporaryFile(filePath, data, fsOps);
+	try {
+		await fsOps.rename(temporaryPath, filePath);
+	} catch (error) {
+		await fsOps.unlink(temporaryPath).catch(() => {});
+		throw error;
+	}
+}
+
+export async function atomicCreateFile(filePath, data, fsOps = fs) {
+	const temporaryPath = await createTemporaryFile(filePath, data, fsOps);
+	try {
+		await fsOps.link(temporaryPath, filePath);
+	} catch (error) {
+		await fsOps.unlink(temporaryPath).catch(() => {});
+		throw error;
+	}
+	await fsOps.unlink(temporaryPath).catch(() => {});
 }
 
 export async function readJsonFile(filePath, fsOps = fs) {
@@ -167,8 +188,15 @@ export class LoginStorageTransaction {
 			if (!isMissing(error)) throw error;
 			bytes = Buffer.from("{}\n");
 		}
-		await atomicWriteFile(this.stageSessionPath, bytes, this.fs);
-		await atomicWriteFile(this.stageStatePath, "{}\n", this.fs);
+		try {
+			await atomicWriteFile(this.stageSessionPath, bytes, this.fs);
+			await atomicWriteFile(this.stageStatePath, "{}\n", this.fs);
+		} catch (error) {
+			for (const filePath of [this.stageSessionPath, this.stageStatePath]) {
+				await this.fs.unlink(filePath).catch(() => {});
+			}
+			throw error;
+		}
 		this.stores = createOAuthStores(this.stageSessionPath, this.stageStatePath, {
 			fs: this.fs,
 			clock: this.clock,

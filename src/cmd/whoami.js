@@ -16,28 +16,24 @@ export async function whoami(options, dependencies = {}) {
 	}
 	if (!identity) throw new RookError("no identity is enrolled at the selected path");
 	const { sessionPath } = deriveIdentityPaths(identityPath);
-	let session;
-	let restorable = false;
+	let sessionStatus;
 	try {
-		session = await readJsonFile(sessionPath, dependencies.fs);
-		restorable = Boolean(
-			session &&
-				Object.hasOwn(session, identity.did) &&
-				session[identity.did]?.dpopJwk &&
-				session[identity.did]?.tokenSet,
-		);
+		const session = await readJsonFile(sessionPath, dependencies.fs);
+		sessionStatus = session === undefined ? "absent" : "present";
 	} catch {
-		session = {};
+		sessionStatus = "malformed";
 	}
+	const details = {
+		absent: "session file is absent; live validity was not checked",
+		present: "session file is present; live validity was not checked",
+		malformed: "session file is malformed or unreadable; live validity was not checked",
+	};
 	return {
 		...publicIdentity(identity, identityPath),
 		session: {
-			present: session !== undefined,
-			restorable,
+			status: sessionStatus,
 			verified: false,
-			detail: restorable
-				? "local session material exists; live validity was not checked"
-				: "no locally restorable session; live validity was not checked",
+			detail: details[sessionStatus],
 		},
 	};
 }

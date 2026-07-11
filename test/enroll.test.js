@@ -145,3 +145,36 @@ test("transport and post-success persistence failures use distinct truthful word
 		/succeeded remotely.*invite was consumed.*not persisted.*Do not retry/s,
 	);
 });
+
+test("fresh enrollment never clobbers an identity created concurrently", async (t) => {
+	const home = await temporaryHome();
+	t.after(home.cleanup);
+	const keys = await testKeys();
+	const original = Buffer.from("occupied identity bytes\n");
+	await fs.writeFile(home.env.ROOK_IDENTITY_FILE, original, { mode: 0o600 });
+	const fetch = async (url, options) => {
+		const pathname = new URL(url).pathname;
+		if (pathname.endsWith("welcome.md")) return new Response("GET /tos\nPOST /api/signup");
+		if (pathname === "/tos") return new Response("terms");
+		const request = JSON.parse(options.body);
+		return Response.json({
+			did: "did:plc:collision",
+			handle: "collision.rook.host",
+			access_token: request.access_token,
+			token_type: "DPoP",
+		});
+	};
+	await assert.rejects(
+		enroll(
+			{ invite: "https://rook.invalid/roost#secret", handle: "collision" },
+			{
+				env: home.env,
+				fetch,
+				generateRsa4096: async () => keys,
+				readIdentity: async () => undefined,
+			},
+		),
+		/already exists.*invite was consumed.*private key was not persisted/s,
+	);
+	assert.deepEqual(await fs.readFile(home.env.ROOK_IDENTITY_FILE), original);
+});

@@ -5,6 +5,7 @@ import { fetchTos, fetchWelcome } from "../lib/discovery.js";
 import { RookError } from "../lib/error-format.js";
 import { publicIdentity, readIdentity, writeIdentity } from "../lib/identity.js";
 import { createOutput } from "../lib/json-output.js";
+import { withTimeout } from "../lib/network.js";
 import { resolveIdentityPath } from "../lib/paths.js";
 import {
 	createAccessToken,
@@ -77,8 +78,8 @@ export async function enroll(options, dependencies = {}) {
 	if (existing) return { ...publicIdentity(existing, identityPath), existing: true };
 
 	const serviceOrigin = inviteUrl.origin;
-	await fetchWelcome(serviceOrigin, fetchImpl);
-	const tosText = await fetchTos(serviceOrigin, fetchImpl);
+	await fetchWelcome(serviceOrigin, fetchImpl, dependencies);
+	const tosText = await fetchTos(serviceOrigin, fetchImpl, dependencies);
 	const { publicKey, privateKey } = await (dependencies.generateRsa4096 ?? generateRsa4096)();
 	const publicJwk = pemToJwk(publicKey);
 	const cryptoOptions = { clock, uuid };
@@ -93,16 +94,22 @@ export async function enroll(options, dependencies = {}) {
 	);
 	let response;
 	try {
-		response = await fetchImpl(endpoint, {
-			method: "POST",
-			headers: { "content-type": "application/json", DPoP: proof },
-			body: JSON.stringify({
-				handle,
-				tos_signature: signTos(tosText, privateKey),
-				access_token: accessToken,
-				ref: options.invite,
-			}),
-		});
+		response = await fetchImpl(
+			endpoint,
+			withTimeout(
+				{
+					method: "POST",
+					headers: { "content-type": "application/json", DPoP: proof },
+					body: JSON.stringify({
+						handle,
+						tos_signature: signTos(tosText, privateKey),
+						access_token: accessToken,
+						ref: options.invite,
+					}),
+				},
+				dependencies,
+			),
+		);
 	} catch {
 		throw responseError(0, undefined);
 	}
@@ -133,8 +140,10 @@ export async function enroll(options, dependencies = {}) {
 	try {
 		await (dependencies.writeIdentity ?? writeIdentity)(identityPath, identity);
 	} catch (cause) {
+		const collision =
+			cause?.code === "EEXIST" ? ` An identity already exists at ${identityPath}.` : "";
 		throw new RookError(
-			`Enrollment succeeded remotely, but rook could not save the local identity at ${identityPath}. The invite was consumed and the remote account may be unrecoverable because its private key was not persisted. Do not retry with a new invite.`,
+			`Enrollment succeeded remotely, but rook could not save the local identity at ${identityPath}.${collision} The invite was consumed and the remote account may be unrecoverable because its private key was not persisted. Do not retry with a new invite.`,
 			{ cause },
 		);
 	}

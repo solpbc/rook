@@ -3,6 +3,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createProgram } from "../src/cli.js";
+import { RookError } from "../src/lib/error-format.js";
+import { createOutput } from "../src/lib/json-output.js";
 import { redact } from "../src/lib/redact.js";
 import { memoryStream, temporaryHome } from "./helpers.js";
 
@@ -87,4 +89,21 @@ test("stdout and stderr remain secret-free across every command failure", async 
 		}
 	}
 	process.exitCode = 0;
+});
+
+test("human errors include redacted causes and actionable hints", () => {
+	const stdout = memoryStream();
+	const stderr = memoryStream();
+	const output = createOutput({ stdout, stderr });
+	output.failure(
+		new RookError("login failed", {
+			cause: new Error("Authorization: Bearer UNIQUE-HUMAN-ERROR-SECRET"),
+			hint: "run rook login",
+		}),
+	);
+	assert.equal(stdout.toString(), "");
+	assert.match(stderr.toString(), /login failed/);
+	assert.match(stderr.toString(), /caused by: Authorization: \[REDACTED\]/);
+	assert.match(stderr.toString(), /hint: run rook login/);
+	assert.doesNotMatch(stderr.toString(), /UNIQUE-HUMAN-ERROR-SECRET/);
 });

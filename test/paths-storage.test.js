@@ -9,6 +9,7 @@ import {
 	AtomicMapStore,
 	ExpiringStateStore,
 	LoginStorageTransaction,
+	atomicCreateFile,
 	atomicWriteFile,
 } from "../src/lib/storage.js";
 import { temporaryHome } from "./helpers.js";
@@ -26,6 +27,16 @@ test("identity path precedence and suffix derivation are deterministic", async (
 	assert.equal(derived.statePath, path.join(home.directory, "alice.state.json"));
 });
 
+test("default identity path honors injected XDG config without an identity override", async (t) => {
+	const home = await temporaryHome();
+	t.after(home.cleanup);
+	const env = { HOME: home.directory, XDG_CONFIG_HOME: path.join(home.directory, "xdg") };
+	assert.equal(
+		resolveIdentityPath({}, env, home.directory),
+		path.join(env.XDG_CONFIG_HOME, "rook", "identity.json"),
+	);
+});
+
 test("atomic files and map stores are mode 0600", async (t) => {
 	const home = await temporaryHome();
 	t.after(home.cleanup);
@@ -37,6 +48,55 @@ test("atomic files and map stores are mode 0600", async (t) => {
 	assert.deepEqual(await store.get("did:plc:a"), { value: 1 });
 	await store.del("did:plc:a");
 	await assert.rejects(fs.stat(filePath), { code: "ENOENT" });
+});
+
+test("atomic replacement failure leaves no target or temporary file", async (t) => {
+	const home = await temporaryHome();
+	t.after(home.cleanup);
+	const filePath = path.join(home.directory, "failed.json");
+	const fsOps = {
+		...fs,
+		rename: async () => {
+			throw new Error("rename failed");
+		},
+	};
+	await assert.rejects(atomicWriteFile(filePath, "secret", fsOps), /rename failed/);
+	assert.deepEqual(await fs.readdir(home.directory), []);
+});
+
+test("atomic create does not replace an existing file", async (t) => {
+	const home = await temporaryHome();
+	t.after(home.cleanup);
+	const filePath = path.join(home.directory, "identity.json");
+	await fs.writeFile(filePath, "original", { mode: 0o600 });
+	await assert.rejects(atomicCreateFile(filePath, "replacement"), { code: "EEXIST" });
+	assert.equal(await fs.readFile(filePath, "utf8"), "original");
+});
+
+test("malformed map JSON hard-fails", async (t) => {
+	const home = await temporaryHome();
+	t.after(home.cleanup);
+	const filePath = path.join(home.directory, "malformed.json");
+	await fs.writeFile(filePath, "not-json", { mode: 0o600 });
+	const store = new AtomicMapStore({ path: filePath });
+	await assert.rejects(store.get("did:plc:test"), SyntaxError);
+});
+
+test("failed transaction start removes every staging file", async (t) => {
+	const home = await temporaryHome();
+	t.after(home.cleanup);
+	const sessionPath = path.join(home.directory, "id.session.json");
+	const statePath = path.join(home.directory, "id.state.json");
+	const fsOps = {
+		...fs,
+		rename: async (source, destination) => {
+			if (destination.includes(".state.json.stage.")) throw new Error("state staging failed");
+			return fs.rename(source, destination);
+		},
+	};
+	const transaction = new LoginStorageTransaction(sessionPath, statePath, { fs: fsOps });
+	await assert.rejects(transaction.start(), /state staging failed/);
+	assert.deepEqual(await fs.readdir(home.directory), []);
 });
 
 test("state store expires stale one-active state", async (t) => {

@@ -23,7 +23,7 @@
 		"format": "biome format --write .",
 		"lint": "biome lint .",
 		"check": "biome check .",
-		"test": "node --test",
+		"test": "node --test test/*.test.js",
 		"ci": "npm run check && npm run test",
 		"pack-check": "node scripts/pack-check.mjs"
 	},

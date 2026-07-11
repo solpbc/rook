@@ -33,8 +33,12 @@ function redactString(value) {
 		.replace(/(https?:\/\/[^\s#]+)#[^\s]*/gi, `$1#${REDACTED}`);
 }
 
+export function redactText(value) {
+	return redactString(String(value));
+}
+
 function walk(value, seen, depth) {
-	if (typeof value === "string") return redactString(value);
+	if (typeof value === "string") return redactText(value);
 	if (value === null || typeof value !== "object") return value;
 	if (depth > 12 || seen.has(value)) return "[Circular]";
 	seen.add(value);

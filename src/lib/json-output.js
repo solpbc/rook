@@ -12,10 +12,6 @@ export function createOutput(options = {}) {
 	const stderr = options.stderr ?? process.stderr;
 	const json = Boolean(options.json);
 	return {
-		json,
-		vlog(message) {
-			write(json ? stderr : stdout, redact(message));
-		},
 		success(fields, human) {
 			if (json) write(stdout, { ok: true, ...redact(fields) });
 			else if (human) write(stdout, redact(human));
@@ -23,7 +19,14 @@ export function createOutput(options = {}) {
 		failure(error) {
 			const formatted = formatError(error);
 			if (json) write(stdout, { ok: false, ...formatted });
-			else write(stderr, formatted.error);
+			else {
+				const lines = [
+					formatted.error,
+					...(formatted.causes ?? []).map((cause) => `caused by: ${cause}`),
+					...(formatted.hint ? [`hint: ${formatted.hint}`] : []),
+				];
+				write(stderr, lines.join("\n"));
+			}
 		},
 	};
 }
