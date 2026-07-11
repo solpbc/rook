@@ -12,13 +12,10 @@ import {
 } from "../lib/git.js";
 import { readIdentity } from "../lib/identity.js";
 import { createOutput } from "../lib/json-output.js";
-import { deriveKnotTarget } from "../lib/knot.js";
-import { fetchClientMetadata, missingScopes } from "../lib/oauth.js";
-import { deriveIdentityPaths, resolveIdentityPath } from "../lib/paths.js";
+import { resolveIdentityPath } from "../lib/paths.js";
 import { readRepoState, writeRepoState } from "../lib/repo-state.js";
 import { mintServiceAuth } from "../lib/service-auth.js";
-import { restoreSession } from "../lib/session.js";
-import { fileExists } from "../lib/storage.js";
+import { restoreContext } from "../lib/session-context.js";
 import {
 	createKnotRepo,
 	createRepoRecord,
@@ -89,7 +86,7 @@ function sameKnotHost(state, knot) {
 	}
 }
 
-export async function fork(options, dependencies = {}) {
+export async function forkCore(options, providedContext, dependencies = {}) {
 	const cwd = dependencies.cwd ?? process.cwd();
 	const upstream = options.upstreamRepoUrl;
 	const gitCommonDir = await attempt(() => resolveGitCommonDir(cwd, dependencies), {
@@ -191,82 +188,35 @@ export async function fork(options, dependencies = {}) {
 			remediation: "run rook enroll --invite <url> --handle <name>",
 		});
 	}
-	const metadata = await attempt(
-		() =>
-			(dependencies.fetchClientMetadata ?? fetchClientMetadata)(
-				identity.serviceOrigin,
-				dependencies,
-			),
-		{
-			stage: "session",
-			code: "session-invalid",
-			remediation: "run rook login",
-			message: "OAuth client metadata is unavailable",
-		},
-	);
-	const paths = deriveIdentityPaths(identityPath);
-	const hasSession = await attempt(() => fileExists(paths.sessionPath, dependencies.fs), {
-		stage: "session",
-		code: "session-invalid",
-		remediation: "run rook login",
-		message: "OAuth session storage could not be inspected",
-	});
-	if (!hasSession) {
-		throw new RookError("no OAuth session is stored", {
-			stage: "session",
-			code: "session-missing",
-			remediation: "run rook login",
+	const context =
+		providedContext ??
+		(await (dependencies.restoreContext ?? restoreContext)(identity, identityPath, dependencies));
+	const knot = context.knot;
+	if (state && !sameKnotHost(state, knot)) {
+		if (!providedContext) await context.transaction.rollback().catch(() => {});
+		throw new RookError("repository rook state belongs to a different knot", {
+			stage: "validate-upstream",
+			code: "state-conflict",
+			remediation: "run rook fork with the identity that owns this repository state",
 		});
 	}
-	const restored = await attempt(
-		() => (dependencies.restoreSession ?? restoreSession)(identity, metadata, paths, dependencies),
-		{
-			stage: "session",
-			code: "session-invalid",
-			remediation: "run rook login",
-			message: "OAuth session is invalid or unrefreshable",
-		},
-	);
-	let promoted = false;
-	let knot;
-	try {
-		const missing = missingScopes(metadata.scope, restored.info.scope);
-		if (missing.length > 0) {
-			throw new RookError(`OAuth grant is missing required scopes: ${missing.join(" ")}`, {
-				stage: "session",
-				code: "scope-missing",
-				remediation: "run rook login",
-			});
-		}
+	if (!providedContext) {
+		let promoted = false;
 		try {
-			knot = deriveKnotTarget(metadata.scope);
-		} catch {
-			throw new RookError("served OAuth scope has no valid knot target", {
-				stage: "validate-upstream",
-				code: "knot-target-invalid",
+			await context.transaction.promote();
+			promoted = true;
+		} catch (error) {
+			throw failure(error, {
+				stage: "session",
+				code: "session-invalid",
 				remediation: "run rook login",
+				message: error instanceof RookError ? undefined : "OAuth session could not be promoted",
 			});
+		} finally {
+			if (!promoted) await context.transaction.rollback().catch(() => {});
 		}
-		if (state && !sameKnotHost(state, knot)) {
-			throw new RookError("repository rook state belongs to a different knot", {
-				stage: "validate-upstream",
-				code: "state-conflict",
-				remediation: "run rook fork with the identity that owns this repository state",
-			});
-		}
-		await restored.transaction.promote();
-		promoted = true;
-	} catch (error) {
-		throw failure(error, {
-			stage: "session",
-			code: "session-invalid",
-			remediation: "run rook login",
-			message: error instanceof RookError ? undefined : "OAuth session could not be promoted",
-		});
-	} finally {
-		if (!promoted) await restored.transaction.rollback().catch(() => {});
 	}
-	const session = restored.session;
+	const session = context.session;
 
 	const canonicalSource = await attempt(() => canonicalRepoSource(upstream), {
 		stage: "derive",
@@ -539,6 +489,10 @@ export async function fork(options, dependencies = {}) {
 		record: { outcome: recordOutcome },
 		remote: { outcome: remote.outcome },
 	};
+}
+
+export function fork(options, dependencies = {}) {
+	return forkCore(options, null, dependencies);
 }
 
 export function register(program, dependencies = {}) {

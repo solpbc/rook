@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function run(command, args, options = {}) {
 	return new Promise((resolve, reject) => {
@@ -62,27 +63,49 @@ for (const filePath of paths) {
 }
 
 const tarball = path.resolve(report.filename);
+const probe = fileURLToPath(new URL("vit-cap-probe.mjs", import.meta.url));
+
+// The frozen vit tarball is supplied out of band (no /tmp path is committed).
+// When present, install it alongside rook so the vit@0.6.0 dependency resolves
+// before it is published, and prove vit/cap.js imports and runs from the install.
+const vitTarball = process.env.ROOK_VIT_TARBALL;
+const mounts = ["-v", `${tarball}:/tmp/rook.tgz:ro`, "-v", `${probe}:/probe.mjs:ro`];
+let installArgs = "/tmp/rook.tgz";
+if (vitTarball) {
+	mounts.push("-v", `${path.resolve(vitTarball)}:/tmp/vit.tgz:ro`);
+	installArgs = "/tmp/vit.tgz /tmp/rook.tgz";
+}
+const script = [
+	"npm config set engine-strict true",
+	`npm install --prefix /tmp/rook-install ${installArgs}`,
+	"cp /probe.mjs /tmp/rook-install/probe.mjs",
+	"node /tmp/rook-install/probe.mjs",
+	"printf '\\n__ROOK_HELP__\\n'",
+	"/tmp/rook-install/node_modules/.bin/rook --help",
+].join(" && ");
+
 try {
 	const container = await run("docker", [
 		"run",
 		"--rm",
-		"-v",
-		`${tarball}:/tmp/rook.tgz:ro`,
+		...mounts,
 		"node:20.10.0",
 		"sh",
 		"-lc",
-		"npm config set engine-strict true && npm install --prefix /tmp/rook-install /tmp/rook.tgz && printf '\\n__ROOK_HELP__\\n' && /tmp/rook-install/node_modules/.bin/rook --help",
+		script,
 	]);
 	const combined = `${container.stdout}${container.stderr}`;
 	if (container.code !== 0) throw new Error(`Node 20.10 packaging acceptance failed:\n${combined}`);
 	if (/EBADENGINE/i.test(combined))
 		throw new Error(`Node 20.10 install emitted EBADENGINE:\n${combined}`);
+	if (!/__VIT_CAP_OK__/.test(combined))
+		throw new Error(`installed vit/cap.js did not resolve or invoke:\n${combined}`);
 	const helpOutput = container.stdout.split("__ROOK_HELP__\n")[1];
 	const firstHelpLine = helpOutput?.split(/\r?\n/)[0];
 	if (firstHelpLine !== "rook ✦ on the job")
 		throw new Error(`installed rook help did not print the required banner:\n${combined}`);
 	process.stdout.write(
-		"pack allowlist passed\nNode 20.10.0 clean install passed with no EBADENGINE\nrook ✦ on the job\n",
+		"pack allowlist passed\nNode 20.10.0 clean install passed with no EBADENGINE\nvit/cap.js resolved and invoked\nrook ✦ on the job\n",
 	);
 } finally {
 	await fs.unlink(tarball).catch(() => {});

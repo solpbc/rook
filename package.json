@@ -28,9 +28,11 @@
 		"pack-check": "node scripts/pack-check.mjs"
 	},
 	"dependencies": {
+		"@atproto/api": "^0.18.20",
 		"@atproto/oauth-client-node": "0.3.16",
 		"commander": "^13.0.0",
-		"env-paths": "4.0.0"
+		"env-paths": "4.0.0",
+		"vit": "0.6.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "1.9.4"

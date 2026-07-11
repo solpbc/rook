@@ -12,6 +12,14 @@
   clone. Non-secret state lives in the Git metadata directory, and reruns adopt existing work.
 - `rook push [branch]` pushes commits with exact rook DID provenance and saves proof only after the
   authenticated remote branch equals the local tip.
+- `rook pr [--update] [--title <t>] [--body <b>]` creates or refreshes the rook-authored
+  `sh.tangled.repo.pull` self-pull for the last pushed branch into the stored default branch and
+  resolves its rendered Tangled URL. Reruns adopt the existing pull; `--update` appends one round.
+- `rook ship [--request <cap-uri>] [--title <t>] [--description <d>] [--ref <r>] [--kind <k>]`
+  creates or refreshes the canonical `org.v-it.cap` for the rendered pull through the installed
+  `vit/cap.js`, embedding the rendered pull URL and an upstream beacon.
+- `rook submit <upstream> [--request <cap-uri>] [--branch <name>]` runs fork, push, pr, and ship in
+  order under one restored session, stopping at the first failed stage.
 - `rook whoami` reports the selected local identity and whether local session material exists. It
   does not verify the session over the network.
 - `rook doctor` performs read-only identity, authentication, and repository push-readiness checks.
