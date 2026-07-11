@@ -8,7 +8,6 @@ import {
 	enumerateProvenance,
 	getRemoteUrl,
 	lsRemoteRef,
-	normalizeRepoIdentity,
 	resolveCommit,
 	resolveGitCommonDir,
 } from "../lib/git.js";
@@ -17,6 +16,7 @@ import { createOutput } from "../lib/json-output.js";
 import { deriveKnotTarget, listKnotMembers } from "../lib/knot.js";
 import { fetchClientMetadata, missingScopes, rpcScopes, tokenInfoFields } from "../lib/oauth.js";
 import { deriveIdentityPaths, resolveIdentityPath } from "../lib/paths.js";
+import { findProvenanceOffenders, provenanceRepairSteps } from "../lib/provenance.js";
 import { readRepoState } from "../lib/repo-state.js";
 import { mintServiceAuth } from "../lib/service-auth.js";
 import { restoreSession } from "../lib/session.js";
@@ -116,15 +116,12 @@ async function serviceAuthCheck(name, nsid, context, dependencies) {
 	}
 }
 
-function provenanceRecovery(identity, base) {
-	return [
-		`git config user.email '${identity.did}'`,
-		`git rebase -i ${base}`,
-		"mark each offending commit for edit",
-		"git commit --amend --reset-author",
-		"git rebase --continue",
-		"review the rewritten history before rerunning rook push",
-	].join("; ");
+function sameKnotHost(state, knot) {
+	try {
+		return new URL(state.rookRemoteUrl).host.toLowerCase() === knot.host.toLowerCase();
+	} catch {
+		return false;
+	}
 }
 
 async function repositoryChecks(context, dependencies) {
@@ -177,9 +174,7 @@ async function repositoryChecks(context, dependencies) {
 	} else {
 		try {
 			const remote = await getRemoteUrl(cwd, "rook", dependencies);
-			remoteReady =
-				remote !== undefined &&
-				normalizeRepoIdentity(remote) === normalizeRepoIdentity(state.rookRemoteUrl);
+			remoteReady = remote === state.rookRemoteUrl;
 			checks.push(
 				remoteReady
 					? check("rook-remote", "ok", "rook remote matches repository state")
@@ -224,10 +219,7 @@ async function repositoryChecks(context, dependencies) {
 				dependencies,
 			);
 			const provenance = await enumerateProvenance(cwd, base, tip, dependencies);
-			const offenders = provenance.filter(
-				({ authorEmail, committerEmail }) =>
-					authorEmail !== context.identity.did || committerEmail !== context.identity.did,
-			);
+			const offenders = findProvenanceOffenders(provenance, context.identity.did);
 			if (offenders.length > 0) {
 				const detail = offenders
 					.map(
@@ -240,7 +232,7 @@ async function repositoryChecks(context, dependencies) {
 						"branch-provenance",
 						"fail",
 						`outgoing commits lack exact rook DID provenance: ${detail}`,
-						provenanceRecovery(context.identity, base),
+						provenanceRepairSteps(context.identity.did, base),
 					),
 				);
 			} else {
@@ -266,12 +258,31 @@ async function repositoryChecks(context, dependencies) {
 	}
 
 	const receiveAuth = context.receiveAuth;
+	const knotHostConflict = Boolean(state && context.knot && !sameKnotHost(state, context.knot));
 	if (!state) {
 		checks.push(
 			check(
 				"receive-pack-advertisement",
 				"not_checked",
 				"repository state prerequisite was not earned",
+			),
+		);
+	} else if (knotHostConflict) {
+		checks.push(
+			check(
+				"receive-pack-advertisement",
+				"fail",
+				"repository state points at a different knot",
+				"run rook fork <upstream-repo-url>",
+			),
+		);
+	} else if (!remoteReady) {
+		checks.push(
+			check(
+				"receive-pack-advertisement",
+				"not_checked",
+				"rook remote prerequisite was not earned",
+				"run rook fork <upstream-repo-url>",
 			),
 		);
 	} else if (!receiveAuth?.token) {
@@ -311,7 +322,25 @@ async function repositoryChecks(context, dependencies) {
 		}
 	}
 
-	if (!state || !branch || !tip || !provenanceReady) {
+	if (!state) {
+		checks.push(
+			check(
+				"repository-push-proof",
+				"not_checked",
+				"repository state prerequisite was not earned",
+				"run rook push",
+			),
+		);
+	} else if (knotHostConflict) {
+		checks.push(
+			check(
+				"repository-push-proof",
+				"fail",
+				"repository state points at a different knot",
+				"run rook fork <upstream-repo-url>",
+			),
+		);
+	} else if (!branch || !tip || !provenanceReady) {
 		checks.push(
 			check(
 				"repository-push-proof",
@@ -579,7 +608,9 @@ export async function doctor(options, dependencies = {}) {
 export function register(program, dependencies = {}) {
 	program
 		.command("doctor")
-		.description("run read-only identity and authentication diagnostics")
+		.description(
+			"run read-only identity, authentication, and repository push-readiness diagnostics",
+		)
 		.option("--json", "emit structured JSON")
 		.action(async (localOptions, command) => {
 			const output = createOutput({ ...dependencies, json: localOptions.json });

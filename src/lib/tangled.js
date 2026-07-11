@@ -227,7 +227,11 @@ export async function readRepoRecord(session, { repo, rkey }, dependencies = {})
 	const body = await responseJson(response);
 	if (response.status === 400 && body?.error === "RecordNotFound") return undefined;
 	if (response.status !== 200) throw repoRecordError("repository record read was rejected");
-	if (!plainObject(body) || !plainObject(body.value)) {
+	if (
+		!plainObject(body) ||
+		!plainObject(body.value) ||
+		body.uri !== expectedRecordUri(repo, rkey)
+	) {
 		throw repoRecordError("repository record response is invalid", "repo-record-invalid-response");
 	}
 	return body.value;

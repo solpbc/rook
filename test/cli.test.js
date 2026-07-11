@@ -33,6 +33,11 @@ test("real rook help begins with exact banner and lists commands", async () => {
 	assert.equal(result.stdout.split(/\r?\n/)[0], "rook ✦ on the job");
 	for (const command of ["enroll", "login", "fork", "push", "whoami", "doctor"])
 		assert.match(result.stdout, new RegExp(command));
+	const doctor = createProgram().commands.find((command) => command.name() === "doctor");
+	assert.equal(
+		doctor.description(),
+		"run read-only identity, authentication, and repository push-readiness diagnostics",
+	);
 });
 
 test("global identity before subcommand wins over environment", async (t) => {

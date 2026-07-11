@@ -72,7 +72,10 @@ async function setupFork(t, options = {}) {
 				calls.recordReads += 1;
 				const record = records.get(url.searchParams.get("rkey"));
 				return record
-					? Response.json({ uri: "at://ignored", value: record })
+					? Response.json({
+							uri: `at://${identity.did}/sh.tangled.repo/${url.searchParams.get("rkey")}`,
+							value: record,
+						})
 					: Response.json({ error: "RecordNotFound" }, { status: 400 });
 			}
 			if (url.pathname === "/xrpc/com.atproto.repo.createRecord") {
@@ -380,6 +383,49 @@ test("fork reruns converge after repo-create, record, remote, and persist failur
 	});
 });
 
+test("fork adopts completed remote side effects after their responses are lost", async (t) => {
+	await t.test("knot repo create", async (t) => {
+		const setup = await setupFork(t);
+		let serverRepoDid;
+		let logicalCreates = 0;
+		setup.dependencies.createKnotRepo = async () => {
+			if (!serverRepoDid) {
+				serverRepoDid = REPO_DID;
+				logicalCreates += 1;
+				throw new RookError("response lost", { code: "repo-create-rejected" });
+			}
+			return { repoDid: serverRepoDid };
+		};
+		await expectForkError(
+			fork({ upstreamRepoUrl: UPSTREAM_URL }, setup.dependencies),
+			"repo-create",
+			"repo-create-rejected",
+		);
+		const result = await fork({ upstreamRepoUrl: UPSTREAM_URL }, setup.dependencies);
+		assert.equal(result.record.outcome, "created");
+		assert.equal(logicalCreates, 1);
+	});
+
+	await t.test("PDS record create", async (t) => {
+		const setup = await setupFork(t);
+		let createAttempts = 0;
+		setup.dependencies.createRepoRecord = async (_session, { rkey, record }) => {
+			createAttempts += 1;
+			setup.records.set(rkey, record);
+			throw new RookError("response lost", { code: "repo-record-rejected" });
+		};
+		await expectForkError(
+			fork({ upstreamRepoUrl: UPSTREAM_URL }, setup.dependencies),
+			"repo-record",
+			"repo-record-rejected",
+		);
+		const result = await fork({ upstreamRepoUrl: ORIGIN_URL }, setup.dependencies);
+		assert.equal(result.record.outcome, "adopted");
+		assert.equal(createAttempts, 1);
+		assert.equal(setup.records.get("repo").source, SOURCE_URL);
+	});
+});
+
 test("an identical fork rerun adopts state and leaves bytes stable", async (t) => {
 	const setup = await setupFork(t);
 	await fork({ upstreamRepoUrl: UPSTREAM_URL }, setup.dependencies);
@@ -415,6 +461,14 @@ test("fork refuses record, remote, and state provenance conflicts", async (t) =>
 
 	await t.test("remote", async (t) => {
 		const setup = await setupFork(t);
+		const commonDir = await resolveGitCommonDir(setup.repository.directory, setup.dependencies);
+		await writeRepoState(commonDir, {
+			upstreamUrl: SOURCE_URL,
+			upstreamDefaultBranch: "main",
+			knotRepoName: "repo",
+			knotRepoDid: REPO_DID,
+			rookRemoteUrl: ROOK_URL,
+		});
 		await setup.repository.run([
 			"remote",
 			"add",
@@ -423,9 +477,10 @@ test("fork refuses record, remote, and state provenance conflicts", async (t) =>
 		]);
 		await expectForkError(
 			fork({ upstreamRepoUrl: UPSTREAM_URL }, setup.dependencies),
-			"remote",
+			"validate-upstream",
 			"remote-conflict",
 		);
+		assert.equal(setup.calls.knotCreates, 0);
 	});
 
 	await t.test("state", async (t) => {

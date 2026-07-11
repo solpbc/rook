@@ -153,6 +153,19 @@ export async function fork(options, dependencies = {}) {
 				remediation: "run rook fork in the clone that owns this repository state",
 			});
 		}
+		const rookRemote = await attempt(() => getRemoteUrl(cwd, "rook", dependencies), {
+			stage: "validate-upstream",
+			code: "remote-conflict",
+			remediation: "verify or remove the conflicting rook remote before retrying",
+			message: "rook remote could not be validated",
+		});
+		if (rookRemote !== undefined && rookRemote !== state.rookRemoteUrl) {
+			throw new RookError("rook remote does not match repository state", {
+				stage: "validate-upstream",
+				code: "remote-conflict",
+				remediation: "verify or remove the conflicting rook remote before retrying",
+			});
+		}
 	}
 
 	let identityPath;
@@ -472,6 +485,8 @@ export async function fork(options, dependencies = {}) {
 		}
 	}
 
+	// On a first fork there is no repo DID in state, so an existing remote can only be
+	// resolved against the derived URL after the knot create-or-adopt response.
 	let remote;
 	try {
 		remote = await (dependencies.ensureRemoteUrl ?? ensureRemoteUrl)(

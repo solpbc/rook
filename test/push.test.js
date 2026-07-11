@@ -177,6 +177,17 @@ test("push provenance requires byte-exact author and committer DID emails withou
 	}
 });
 
+test("push rejects an equivalent SSH rook remote before minting or pushing", async (t) => {
+	const setup = await setupPush(t);
+	await setup.repository.run(["remote", "set-url", "rook", `ssh://git@knot.rook.host/${REPO_DID}`]);
+	await expectPushError(push({ json: true }, setup.dependencies), "gate", "remote-conflict");
+	assert.equal(setup.calls.mints.length, 0);
+	assert.equal(
+		setup.calls.git.some(({ args }) => args[0] === "push"),
+		false,
+	);
+});
+
 test("push reports session, mint, and persistence failures at stable stages", async (t) => {
 	await t.test("session missing", async (t) => {
 		const setup = await setupPush(t);
@@ -307,6 +318,26 @@ test("push JSON verification failures are structured and token-free", async (t) 
 	assert.equal(result.remediation, "run rook push");
 	assert.equal(stderr.toString(), "");
 	assert.doesNotMatch(stdout.toString(), /PUSH-TOKEN-CANARY/);
+});
+
+test("push redacts reflected credentials in the verification error cause", async (t) => {
+	const setup = await setupPush(t);
+	const canary = "REFLECTED-PUSH-TOKEN-CANARY-1234567890";
+	setup.dependencies.pushRef = async () => ({
+		status: 1,
+		stdout: "",
+		stderr: `Authorization: Bearer ${canary}`,
+	});
+	let caught;
+	try {
+		await push({ json: true }, setup.dependencies);
+	} catch (error) {
+		caught = error;
+	}
+	assert.equal(caught.code, "remote-ref-missing");
+	assert.ok(caught.cause instanceof Error);
+	assert.doesNotMatch(caught.cause.message, new RegExp(canary));
+	assert.match(caught.cause.message, /\[REDACTED\]/);
 });
 
 test("push failure output never contains a token passed through Git auth env", async (t) => {

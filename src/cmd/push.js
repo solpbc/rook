@@ -7,7 +7,6 @@ import {
 	enumerateProvenance,
 	getRemoteUrl,
 	lsRemoteRef,
-	normalizeRepoIdentity,
 	pushRef,
 	resolveCommit,
 	resolveGitCommonDir,
@@ -18,6 +17,7 @@ import { createOutput } from "../lib/json-output.js";
 import { deriveKnotTarget } from "../lib/knot.js";
 import { fetchClientMetadata, missingScopes } from "../lib/oauth.js";
 import { deriveIdentityPaths, resolveIdentityPath } from "../lib/paths.js";
+import { findProvenanceOffenders, provenanceRepairSteps } from "../lib/provenance.js";
 import { redactText } from "../lib/redact.js";
 import { readRepoState, writeRepoState } from "../lib/repo-state.js";
 import { mintServiceAuth } from "../lib/service-auth.js";
@@ -47,19 +47,8 @@ async function attempt(action, options) {
 	}
 }
 
-function provenanceRemediation(identity, base) {
-	return [
-		`git config user.email '${identity.did}'`,
-		`git rebase -i ${base}`,
-		"mark each offending commit for edit",
-		"git commit --amend --reset-author",
-		"git rebase --continue",
-		"review the rewritten history before rerunning rook push",
-	].join("; ");
-}
-
 function pushContext(result) {
-	const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+	const output = redactText([result.stdout, result.stderr].filter(Boolean).join("\n").trim());
 	return new Error(output || `git push exited with status ${result.status}`);
 }
 
@@ -200,13 +189,10 @@ export async function push(options, dependencies = {}) {
 	const provenance = await attempt(() => enumerateProvenance(cwd, base, localTip, dependencies), {
 		stage: "gate",
 		code: "provenance-mismatch",
-		remediation: provenanceRemediation(identity, base),
+		remediation: provenanceRepairSteps(identity.did, base),
 		message: "outgoing commit provenance could not be inspected",
 	});
-	const offenders = provenance.filter(
-		({ authorEmail, committerEmail }) =>
-			authorEmail !== identity.did || committerEmail !== identity.did,
-	);
+	const offenders = findProvenanceOffenders(provenance, identity.did);
 	if (offenders.length > 0) {
 		const detail = offenders
 			.map(
@@ -217,7 +203,7 @@ export async function push(options, dependencies = {}) {
 		throw new RookError(`outgoing commits have invalid rook provenance\n${detail}`, {
 			stage: "gate",
 			code: "provenance-mismatch",
-			remediation: provenanceRemediation(identity, base),
+			remediation: provenanceRepairSteps(identity.did, base),
 		});
 	}
 	const rookRemote = await attempt(() => getRemoteUrl(cwd, "rook", dependencies), {
@@ -226,15 +212,7 @@ export async function push(options, dependencies = {}) {
 		remediation: "run rook fork <upstream-repo-url>",
 		message: "rook remote is unavailable",
 	});
-	let remoteMatches = false;
-	try {
-		remoteMatches =
-			rookRemote !== undefined &&
-			normalizeRepoIdentity(rookRemote) === normalizeRepoIdentity(state.rookRemoteUrl);
-	} catch {
-		remoteMatches = false;
-	}
-	if (!remoteMatches) {
+	if (rookRemote !== state.rookRemoteUrl) {
 		throw new RookError("rook remote does not match repository state", {
 			stage: "gate",
 			code: "remote-conflict",

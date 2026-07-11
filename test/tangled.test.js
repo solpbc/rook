@@ -114,7 +114,7 @@ test("readRepoRecord returns a found value and sends exact query parameters", as
 	const session = {
 		fetchHandler: async (url, options) => {
 			request = { url: new URL(url, "https://pds.invalid"), options };
-			return Response.json({ uri: "at://ignored", value });
+			return Response.json({ uri: "at://did:plc:rook/sh.tangled.repo/vmlx-swift", value });
 		},
 	};
 	assert.deepEqual(
@@ -128,6 +128,24 @@ test("readRepoRecord returns a found value and sends exact query parameters", as
 		rkey: "vmlx-swift",
 	});
 	assert.ok(request.options.signal instanceof AbortSignal);
+});
+
+test("readRepoRecord requires an exact returned AT URI", async () => {
+	const value = { $type: "sh.tangled.repo", repoDid };
+	for (const uri of [
+		undefined,
+		"at://did:plc:other/sh.tangled.repo/vmlx-swift",
+		"at://did:plc:rook/sh.tangled.repo/other",
+		"at://did:plc:rook/sh.tangled.repo/vmlx-swift-lookalike",
+	]) {
+		await assert.rejects(
+			readRepoRecord(
+				{ fetchHandler: async () => Response.json({ uri, value }) },
+				{ repo: "did:plc:rook", rkey: "vmlx-swift" },
+			),
+			(error) => error.code === "repo-record-invalid-response",
+		);
+	}
 });
 
 test("readRepoRecord recognizes only the protocol RecordNotFound response", async () => {

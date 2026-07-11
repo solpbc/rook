@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createProgram } from "../src/cli.js";
 import { doctor, doctorOverall } from "../src/cmd/doctor.js";
+import { RookError } from "../src/lib/error-format.js";
 import { resolveGitCommonDir } from "../src/lib/git.js";
 import { writeIdentity } from "../src/lib/identity.js";
 import { deriveIdentityPaths } from "../src/lib/paths.js";
@@ -43,7 +44,8 @@ async function setupDoctor(t, overrides = {}) {
 			expiresAt: overrides.expiresAt,
 		}),
 		fetchHandler:
-			overrides.fetchHandler ?? (async () => Response.json({ token: "service-auth-secret" })),
+			overrides.fetchHandler ??
+			(async () => Response.json({ token: "DOCTOR-TOKEN-CANARY-1234567890" })),
 	};
 	const dependencies = {
 		env: home.env,
@@ -66,12 +68,14 @@ async function setupConfiguredDoctor(t, overrides = {}) {
 	await repository.run(["update-ref", "refs/remotes/origin/main", base]);
 	const tip = await repository.commit({
 		message: "outgoing",
-		authorEmail: setup.identity.did,
-		committerEmail: setup.identity.did,
+		authorEmail: overrides.authorEmail ?? setup.identity.did,
+		committerEmail: overrides.committerEmail ?? setup.identity.did,
 	});
 	const repoDid = "did:plc:y4n6knl55l5bcoazo6qki4iu";
-	const rookRemoteUrl = `https://knot.invalid/${repoDid}`;
-	await repository.run(["remote", "add", "rook", rookRemoteUrl]);
+	const rookRemoteUrl = `https://${overrides.stateHost ?? "knot.invalid"}/${repoDid}`;
+	if (!overrides.missingRemote) {
+		await repository.run(["remote", "add", "rook", overrides.localRemoteUrl ?? rookRemoteUrl]);
+	}
 	const gitCommonDir = await resolveGitCommonDir(repository.directory, { env: repository.env });
 	const state = {
 		upstreamUrl: "https://github.com/owner/repo.git",
@@ -82,16 +86,24 @@ async function setupConfiguredDoctor(t, overrides = {}) {
 		...(overrides.pushProof === false
 			? {}
 			: {
-					lastPushedBranch: "main",
+					lastPushedBranch: overrides.pushProofBranch ?? "main",
 					lastPushedTip: overrides.staleTip ? "a".repeat(40) : tip,
 				}),
 	};
 	await writeRepoState(gitCommonDir, state);
 	setup.dependencies.cwd = repository.directory;
-	setup.dependencies.receivePackAdvertisement =
-		overrides.receivePackAdvertisement ?? (async () => ({ ok: true }));
-	setup.dependencies.lsRemoteRef = overrides.lsRemoteRef ?? (async () => tip);
-	return { ...setup, repository, tip, gitCommonDir };
+	const calls = { advertisements: 0, lsRemote: 0 };
+	const advertisement = overrides.receivePackAdvertisement ?? (async () => ({ ok: true }));
+	const remoteRef = overrides.lsRemoteRef ?? (async () => tip);
+	setup.dependencies.receivePackAdvertisement = async (...args) => {
+		calls.advertisements += 1;
+		return advertisement(...args);
+	};
+	setup.dependencies.lsRemoteRef = async (...args) => {
+		calls.lsRemote += 1;
+		return remoteRef(...args);
+	};
+	return { ...setup, repository, tip, gitCommonDir, repoDid, rookRemoteUrl, calls };
 }
 
 async function runDoctorCommand(dependencies) {
@@ -117,7 +129,7 @@ test("identity/auth-only doctor remains not_checked and names rook push", async 
 		result.checks.find(({ name }) => name === "session-restore-expiry").detail,
 		/expired=unknown/,
 	);
-	assert.doesNotMatch(JSON.stringify(result), /service-auth-secret/);
+	assert.doesNotMatch(JSON.stringify(result), /DOCTOR-TOKEN-CANARY/);
 	assert.equal((await runDoctorCommand(dependencies)).exitCode, 1);
 });
 
@@ -157,6 +169,104 @@ test("doctor rejects a stale saved tip and names rook push", async (t) => {
 	assert.equal(proof.status, "fail");
 	assert.equal(proof.recovery, "run rook push");
 	assert.equal(result.overall.status, "fail");
+});
+
+test("doctor binds token-bearing probes to the OAuth-derived knot host", async (t) => {
+	const setup = await setupConfiguredDoctor(t, { stateHost: "other.invalid" });
+	const result = await doctor({}, setup.dependencies);
+	for (const name of ["receive-pack-advertisement", "repository-push-proof"]) {
+		const earned = result.checks.find((item) => item.name === name);
+		assert.equal(earned.status, "fail");
+		assert.match(earned.detail, /different knot/);
+	}
+	assert.deepEqual(setup.calls, { advertisements: 0, lsRemote: 0 });
+	const command = await runDoctorCommand(setup.dependencies);
+	assert.doesNotMatch(JSON.stringify(command), /DOCTOR-TOKEN-CANARY/);
+});
+
+test("doctor rejects an equivalent SSH rook remote without sending the token", async (t) => {
+	const setup = await setupConfiguredDoctor(t, {
+		localRemoteUrl: "ssh://git@knot.invalid/did:plc:y4n6knl55l5bcoazo6qki4iu",
+	});
+	const result = await doctor({}, setup.dependencies);
+	assert.equal(result.checks.find(({ name }) => name === "rook-remote").status, "fail");
+	assert.notEqual(
+		result.checks.find(({ name }) => name === "receive-pack-advertisement").status,
+		"ok",
+	);
+	assert.notEqual(result.checks.find(({ name }) => name === "repository-push-proof").status, "ok");
+	assert.deepEqual(setup.calls, { advertisements: 0, lsRemote: 0 });
+});
+
+test("doctor reports repository configuration and provenance failures", async (t) => {
+	for (const [name, options, checkName] of [
+		["provenance", { authorEmail: "wrong@example.invalid" }, "branch-provenance"],
+		["missing remote", { missingRemote: true }, "rook-remote"],
+	]) {
+		await t.test(name, async (t) => {
+			const setup = await setupConfiguredDoctor(t, options);
+			const result = await doctor({}, setup.dependencies);
+			assert.equal(result.checks.find((item) => item.name === checkName).status, "fail");
+			assert.notEqual(result.overall.status, "ok");
+		});
+	}
+});
+
+test("doctor distinguishes rejected and unavailable receive-pack advertisements", async (t) => {
+	for (const [name, code, status] of [
+		["rejected", "receive-pack-rejected", "fail"],
+		["unavailable", "receive-pack-unavailable", "degraded"],
+	]) {
+		await t.test(name, async (t) => {
+			const setup = await setupConfiguredDoctor(t, {
+				receivePackAdvertisement: async () => {
+					throw new RookError(name, { code });
+				},
+			});
+			const result = await doctor({}, setup.dependencies);
+			assert.equal(
+				result.checks.find(({ name: checkName }) => checkName === "receive-pack-advertisement")
+					.status,
+				status,
+			);
+		});
+	}
+});
+
+test("doctor never accepts a push proof saved for another branch", async (t) => {
+	const setup = await setupConfiguredDoctor(t, { pushProofBranch: "extro/other" });
+	const result = await doctor({}, setup.dependencies);
+	assert.equal(result.checks.find(({ name }) => name === "repository-push-proof").status, "fail");
+	assert.notEqual(result.overall.status, "ok");
+});
+
+test("doctor classifies live remote-ref proof failures", async (t) => {
+	for (const [name, lsRemoteRef, status] of [
+		[
+			"missing",
+			async () => {
+				throw new RookError("missing", { code: "remote-ref-missing" });
+			},
+			"fail",
+		],
+		["mismatch", async () => "b".repeat(40), "fail"],
+		[
+			"transient",
+			async () => {
+				throw new Error("offline");
+			},
+			"degraded",
+		],
+	]) {
+		await t.test(name, async (t) => {
+			const setup = await setupConfiguredDoctor(t, { lsRemoteRef });
+			const result = await doctor({}, setup.dependencies);
+			assert.equal(
+				result.checks.find(({ name: checkName }) => checkName === "repository-push-proof").status,
+				status,
+			);
+		});
+	}
 });
 
 test("doctor maps 403 InsufficientScope to failed service-auth checks naming scopes", async (t) => {
