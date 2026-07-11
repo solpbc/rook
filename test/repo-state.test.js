@@ -143,6 +143,28 @@ test("pull, rendered, and cap groups round-trip as an additive layer", async (t)
 	void withRendered;
 });
 
+test("pullRoundTip requires the pull group and a valid commit id", async (t) => {
+	const withGroup = await stateDirectory(t);
+	const saved = await writeRepoState(withGroup, {
+		...CORE_STATE,
+		...PULL_STATE,
+		pullRoundTip: "a".repeat(40),
+	});
+	assert.equal(saved.pullRoundTip, "a".repeat(40));
+
+	const noGroup = await stateDirectory(t);
+	await assert.rejects(
+		writeRepoState(noGroup, { ...CORE_STATE, pullRoundTip: "a".repeat(40) }),
+		(error) => error.code === "state-invalid",
+	);
+
+	const badTip = await stateDirectory(t);
+	await assert.rejects(
+		writeRepoState(badTip, { ...CORE_STATE, ...PULL_STATE, pullRoundTip: "not-a-sha" }),
+		(error) => error.code === "state-invalid",
+	);
+});
+
 test("partial pull group is rejected", async (t) => {
 	const gitCommonDir = await stateDirectory(t);
 	await writeRepoState(gitCommonDir, CORE_STATE);

@@ -174,23 +174,27 @@ export async function shipCore(options, providedContext, dependencies = {}) {
 	const context =
 		providedContext ??
 		(await (dependencies.restoreContext ?? restoreContext)(identity, identityPath, dependencies));
-	if (!sameKnotHost(state, context.knot)) {
+	const agent = context.agent;
+	const rollbackOwn = async () => {
 		if (!providedContext) await context.transaction.rollback().catch(() => {});
+	};
+	if (!sameKnotHost(state, context.knot)) {
+		await rollbackOwn();
 		throw new RookError("repository state belongs to a different knot", {
 			stage: "session",
 			code: "state-conflict",
 			remediation: "run rook fork <upstream-repo-url>",
 		});
 	}
-	if (!providedContext) await promoteStandalone(context);
-	const agent = context.agent;
 	if (agent.did !== identity.did) {
+		await rollbackOwn();
 		throw new RookError("restored agent does not match the selected identity", {
 			stage: "session",
 			code: "session-identity-mismatch",
 			remediation: "run rook login",
 		});
 	}
+	if (!providedContext) await promoteStandalone(context);
 
 	const rookDid = identity.did;
 	const renderedPullUrl = state.renderedPullUrl;

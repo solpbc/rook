@@ -145,6 +145,7 @@ export function buildPullRecord({
 
 export async function createPullRecord(agent, { repo, rkey, record }, _dependencies = {}) {
 	if (!validDid(repo) || !validRecordKey(rkey)) throw pullError("pull record request is invalid");
+	if (repo !== agent.did) throw pullError("pull write target must match the authenticated agent");
 	let response;
 	try {
 		response = await agent.com.atproto.repo.putRecord({
@@ -170,6 +171,7 @@ export async function appendPullRound(
 	_dependencies = {},
 ) {
 	if (!validDid(repo) || !validRecordKey(rkey)) throw pullError("pull record request is invalid");
+	if (repo !== agent.did) throw pullError("pull write target must match the authenticated agent");
 	if (!plainObject(priorRecord) || !Array.isArray(priorRecord.rounds)) {
 		throw pullError("pull record is not refreshable", "pull-record-invalid-response");
 	}

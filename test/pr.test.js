@@ -344,6 +344,49 @@ test("pr rendered-URL timeout persists the pull and reports the AT-URI, then a r
 	assert.equal(resolved.renderedPullUrl, `${APPVIEW}/${ROOK_DID}/${REPO_NAME}/pulls/7`);
 });
 
+function matchingPullValue() {
+	return {
+		$type: PULL_COLLECTION,
+		title: "feature → main",
+		source: { branch: "feature" },
+		target: { repo: KNOT_DID, branch: "main", repoDid: KNOT_DID },
+		createdAt: "2026-07-01T00:00:00.000Z",
+		rounds: [{ createdAt: "2026-07-01T00:00:00.000Z", patchBlob: { $type: "blob" } }],
+	};
+}
+
+test("submit-mode pr adopts without appending when the pushed tip is unchanged", async (t) => {
+	const pulls = new Map([["pull1", { cid: "bafexisting0", value: matchingPullValue() }]]);
+	const setup = await setupPr(t, { pulls });
+	await writeRepoState(setup.gitCommonDir, {
+		pullUri: setup.pullUri,
+		pullRkey: "pull1",
+		pullCid: "bafexisting0",
+		pullCreatedAt: "2026-07-01T00:00:00.000Z",
+		pullRoundTip: setup.tip,
+	});
+	const result = await pr({ json: true, appendWhenExists: true }, setup.dependencies);
+	assert.equal(result.outcome, "adopted");
+	assert.equal(setup.puts.length, 0, "no redundant round appended on an unchanged tip");
+});
+
+test("submit-mode pr appends a round when the pushed tip advanced", async (t) => {
+	const pulls = new Map([["pull1", { cid: "bafexisting0", value: matchingPullValue() }]]);
+	const setup = await setupPr(t, { pulls });
+	await writeRepoState(setup.gitCommonDir, {
+		pullUri: setup.pullUri,
+		pullRkey: "pull1",
+		pullCid: "bafexisting0",
+		pullCreatedAt: "2026-07-01T00:00:00.000Z",
+		pullRoundTip: "b".repeat(40),
+	});
+	const result = await pr({ json: true, appendWhenExists: true }, setup.dependencies);
+	assert.equal(result.outcome, "refreshed");
+	assert.equal(setup.puts.length, 1);
+	const state = await readState(setup.gitCommonDir);
+	assert.equal(state.pullRoundTip, setup.tip);
+});
+
 test("prCore with a provided context skips its own restore and promotion", async (t) => {
 	const setup = await setupPr(t);
 	const context = await setup.dependencies.restoreContext();

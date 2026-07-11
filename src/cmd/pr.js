@@ -13,7 +13,6 @@ import {
 	listPullRecords,
 	nextRkey,
 	pullMatchesTuple,
-	readPullRecord,
 	uploadPatchBlob,
 } from "../lib/pull.js";
 import { DEFAULT_APPVIEW_ORIGIN, resolveRenderedPullUrl } from "../lib/rendered-url.js";
@@ -83,24 +82,10 @@ async function promoteStandalone(context) {
 	}
 }
 
-// Find the one self-pull matching the full effective tuple. A locally stored pull
-// is reused only if its record still carries the tuple; otherwise it is preserved
-// and rediscovered across every page. More than one match fails without a write.
-async function discoverPull(agent, rookDid, state, wanted, dependencies) {
-	if (state.pullRkey) {
-		const stored = await attempt(
-			() => readPullRecord(agent, { repo: rookDid, rkey: state.pullRkey }, dependencies),
-			{
-				stage: "pull",
-				code: "pull-record-rejected",
-				remediation: RETRY_PR,
-				message: "could not read the stored pull record",
-			},
-		);
-		if (stored && pullMatchesTuple(stored.value, wanted)) {
-			return { uri: stored.uri, rkey: state.pullRkey, cid: stored.cid, value: stored.value };
-		}
-	}
+// Find the one self-pull matching the full effective tuple across every page.
+// A stored pull is reused only through this same tuple match, so a pull whose
+// record no longer matches is preserved. More than one match fails without a write.
+async function discoverPull(agent, rookDid, wanted, dependencies) {
 	const all = await attempt(() => listPullRecords(agent, rookDid, dependencies), {
 		stage: "pull",
 		code: "pull-list-failed",
@@ -181,23 +166,27 @@ export async function prCore(options, providedContext, dependencies = {}) {
 	const context =
 		providedContext ??
 		(await (dependencies.restoreContext ?? restoreContext)(identity, identityPath, dependencies));
-	if (!sameKnotHost(state, context.knot)) {
+	const agent = context.agent;
+	const rollbackOwn = async () => {
 		if (!providedContext) await context.transaction.rollback().catch(() => {});
+	};
+	if (!sameKnotHost(state, context.knot)) {
+		await rollbackOwn();
 		throw new RookError("repository state belongs to a different knot", {
 			stage: "session",
 			code: "state-conflict",
 			remediation: "run rook fork <upstream-repo-url>",
 		});
 	}
-	if (!providedContext) await promoteStandalone(context);
-	const agent = context.agent;
 	if (agent.did !== identity.did) {
+		await rollbackOwn();
 		throw new RookError("restored agent does not match the selected identity", {
 			stage: "session",
 			code: "session-identity-mismatch",
 			remediation: "run rook login",
 		});
 	}
+	if (!providedContext) await promoteStandalone(context);
 
 	const rookDid = identity.did;
 	const knotRepoDid = state.knotRepoDid;
@@ -217,14 +206,22 @@ export async function prCore(options, providedContext, dependencies = {}) {
 		},
 	);
 
-	const existing = await discoverPull(agent, rookDid, state, wanted, dependencies);
-	const append = options.update === true || options.appendWhenExists === true;
+	const existing = await discoverPull(agent, rookDid, wanted, dependencies);
 	if (!existing && options.update === true) {
 		throw new RookError("no existing pull to update", {
 			stage: "pull",
 			code: "pull-missing",
 			remediation: "run rook pr to open the pull first",
 		});
+	}
+	// --update always appends a fresh round on demand. submit's automatic append
+	// only fires when the pushed tip advanced past the last recorded round, so
+	// re-running submit after a transient later-stage failure adopts instead of
+	// stacking an identical round.
+	let append = false;
+	if (existing) {
+		if (options.update === true) append = true;
+		else if (options.appendWhenExists === true) append = state.pullRoundTip !== tip;
 	}
 
 	let pull;
@@ -304,7 +301,9 @@ export async function prCore(options, providedContext, dependencies = {}) {
 		}
 	}
 
-	// State only after the durable pull write (or confirmed adoption).
+	// State only after the durable pull write (or confirmed adoption). A created
+	// or refreshed round records the tip it covers so submit stays idempotent;
+	// adoption leaves any existing round tip untouched.
 	await attempt(
 		() =>
 			(dependencies.writeRepoState ?? writeRepoState)(
@@ -314,6 +313,7 @@ export async function prCore(options, providedContext, dependencies = {}) {
 					pullRkey: pull.rkey,
 					pullCid: pull.cid,
 					pullCreatedAt: pull.createdAt,
+					...(outcome === "adopted" ? {} : { pullRoundTip: tip }),
 				},
 				dependencies,
 			),

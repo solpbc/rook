@@ -91,6 +91,9 @@ test("capMatches keys off rendered URL, beacon, and request parent", () => {
 		capMatches(record, { renderedPullUrl: RENDERED, beacon: BEACON, requestParentUri: "at://req" }),
 		false,
 	);
+	// A request reply cap is not matched by a non-request ship, so it is never
+	// reparented into a plain cap.
+	assert.equal(capMatches(reply, { renderedPullUrl: RENDERED, beacon: BEACON }), false);
 });
 
 test("capUnchanged detects identical overridable content", () => {

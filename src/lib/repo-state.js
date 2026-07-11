@@ -17,6 +17,7 @@ const ALLOWED_KEYS = new Set([
 	"pullRkey",
 	"pullCid",
 	"pullCreatedAt",
+	"pullRoundTip",
 	"renderedPullUrl",
 	"capUri",
 	"capRkey",
@@ -177,6 +178,13 @@ function validateGroups(value) {
 		validateAtUri(value.pullUri, PULL_COLLECTION, value.pullRkey, "pull URI");
 		validateCid(value.pullCid, "pull CID");
 		validateTimestamp(value.pullCreatedAt, "pull timestamp");
+	}
+
+	if (Object.hasOwn(value, "pullRoundTip")) {
+		if (!hasPull) throw invalidState("repository state pull round tip requires pull fields");
+		if (!/^[0-9a-f]{40}$/.test(value.pullRoundTip)) {
+			throw invalidState("repository state pull round tip is invalid");
+		}
 	}
 
 	const hasRendered = Object.hasOwn(value, "renderedPullUrl");

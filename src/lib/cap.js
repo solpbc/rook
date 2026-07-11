@@ -71,13 +71,15 @@ export async function listCapRecords(agent, repo, dependencies = {}) {
 }
 
 // Identity match: a cap is the same self-pull cap when it points at the same
-// rendered pull URL and beacon (and, for a request, replies to the same parent).
+// rendered pull URL and beacon and agrees on reply intent. A request ship matches
+// only the reply to that request; a non-request ship matches only a non-reply cap,
+// so a request reply cap is never reparented into a plain cap or vice versa.
 export function capMatches(record, { renderedPullUrl, beacon, requestParentUri }) {
 	if (!plainObject(record)) return false;
 	if (record.embed?.external?.uri !== renderedPullUrl) return false;
 	if (record.beacon !== beacon) return false;
 	if (requestParentUri) return record.reply?.parent?.uri === requestParentUri;
-	return true;
+	return record.reply === undefined;
 }
 
 // Content match: identical overridable content, so a re-run can adopt without a

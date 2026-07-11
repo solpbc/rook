@@ -252,6 +252,25 @@ test("ship --request fails before any write when the request cap is missing", as
 	assert.equal(setup.puts.length, 0);
 });
 
+test("ship without --request never reparents an existing request reply cap", async (t) => {
+	const replyCap = unchangedCapValue({
+		reply: {
+			root: { uri: "at://r/root", cid: "bafroot" },
+			parent: { uri: "at://r/req", cid: "bafreq" },
+		},
+	});
+	const caps = new Map([["reply1", { cid: "bafreply00", value: replyCap }]]);
+	const setup = await setupShip(t, { caps });
+	const result = await ship({ json: true }, setup.dependencies);
+	// A fresh plain cap is created; the reply cap is left untouched.
+	assert.equal(result.outcome, "created");
+	assert.ok(
+		setup.puts.every((put) => put.rkey !== "reply1"),
+		"reply cap not rewritten",
+	);
+	assert.deepEqual(setup.caps.get("reply1").value, replyCap);
+});
+
 test("ship fails without a write when multiple caps match", async (t) => {
 	const value = unchangedCapValue();
 	const caps = new Map([

@@ -10,10 +10,13 @@ const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
 // The outgoing range is the same two-dot range push proves provenance over:
 // commits reachable from the pushed tip but not from the stored upstream base.
 // `--no-signature` drops git's version-dependent trailer so the same tips
-// produce byte-identical patches regardless of the local git version. Merge
-// commits are omitted by format-patch's default behaviour; the range stays
-// deterministic. The raw patch is data destined for a blob, never a log, so it
-// is captured unredacted; only diagnostic stderr is redacted on failure.
+// produce byte-identical patches on the same machine across git versions (the
+// gzip OS byte and local diff config still vary across platforms, which does not
+// matter: blobs are never compared byte-for-byte; idempotence keys off the pull
+// tuple and the recorded round tip). Merge commits are omitted by format-patch's
+// default behaviour; the range stays deterministic. The raw patch is data
+// destined for a blob, never a log, so it is captured unredacted; only
+// diagnostic stderr is redacted on failure.
 function runFormatPatch(cwd, base, tip, dependencies) {
 	const maxBuffer = dependencies.maxGitOutputBytes ?? DEFAULT_MAX_BUFFER;
 	return new Promise((resolve, reject) => {
