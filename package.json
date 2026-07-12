@@ -1,6 +1,6 @@
 {
 	"name": "@solpbc/rook",
-	"version": "0.1.2",
+	"version": "0.2.0",
 	"description": "the end-to-end workflow tool for rooks",
 	"license": "AGPL-3.0-only",
 	"type": "module",
@@ -18,7 +18,12 @@
 	"bin": {
 		"rook": "bin/rook.js"
 	},
-	"files": ["bin/", "src/", "README.md", "LICENSE"],
+	"files": [
+		"bin/",
+		"src/",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"format": "biome format --write .",
 		"lint": "biome lint .",
