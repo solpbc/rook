@@ -225,7 +225,9 @@ export async function readRepoRecord(session, { repo, rkey }, dependencies = {})
 		throw repoRecordError("repository record could not be read");
 	}
 	const body = await responseJson(response);
-	if (response.status === 400 && body?.error === "RecordNotFound") return undefined;
+	// The XRPC error code is the authoritative absence signal; PDS implementations
+	// disagree on the status enum (reference returns 400, rookery returns 404).
+	if (response.status !== 200 && body?.error === "RecordNotFound") return undefined;
 	if (response.status !== 200) throw repoRecordError("repository record read was rejected");
 	if (
 		!plainObject(body) ||
@@ -261,7 +263,7 @@ export async function createRepoRecord(session, { repo, rkey, record }, dependen
 		throw repoRecordError("repository record could not be created");
 	}
 	const body = await responseJson(response);
-	if (response.status === 400 && body?.error === "RecordAlreadyExists") {
+	if (response.status !== 200 && body?.error === "RecordAlreadyExists") {
 		throw repoRecordError("repository record already exists", "repo-record-conflict");
 	}
 	if (response.status !== 200) throw repoRecordError("repository record create was rejected");

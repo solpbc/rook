@@ -76,7 +76,7 @@ async function setupFork(t, options = {}) {
 							uri: `at://${identity.did}/sh.tangled.repo/${url.searchParams.get("rkey")}`,
 							value: record,
 						})
-					: Response.json({ error: "RecordNotFound" }, { status: 400 });
+					: Response.json({ error: "RecordNotFound" }, { status: options.notFoundStatus ?? 400 });
 			}
 			if (url.pathname === "/xrpc/com.atproto.repo.createRecord") {
 				const body = JSON.parse(init.body);
@@ -174,6 +174,14 @@ test("fork matches an equivalent SCP upstream and creates exact state, record, a
 			createdAt: "2023-11-14T22:13:20.000Z",
 		},
 	});
+});
+
+test("fork treats a non-400 RecordNotFound as an absent record (rookery 404 shape)", async (t) => {
+	const setup = await setupFork(t, { notFoundStatus: 404 });
+	const result = await fork({ upstreamRepoUrl: UPSTREAM_URL }, setup.dependencies);
+	assert.equal(result.record.outcome, "created");
+	assert.equal(result.knotRepoDid, REPO_DID);
+	assert.equal(setup.calls.recordCreates, 1);
 });
 
 test("fork refuses credential-bearing and mismatched upstreams without echoing input", async (t) => {

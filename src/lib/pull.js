@@ -34,11 +34,10 @@ function pullError(message, code = "pull-record-rejected", options = {}) {
 	return new RookError(message, { code, ...options });
 }
 
+// The XRPC error code is the authoritative absence signal; PDS implementations
+// disagree on the status enum (reference returns 400, rookery returns 404).
 function isRecordNotFound(error) {
-	return (
-		error?.status === 400 &&
-		(error?.error === "RecordNotFound" || /RecordNotFound/.test(error?.message ?? ""))
-	);
+	return error?.error === "RecordNotFound" || /RecordNotFound/.test(error?.message ?? "");
 }
 
 function isSwapConflict(error) {

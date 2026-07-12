@@ -148,17 +148,21 @@ test("readRepoRecord requires an exact returned AT URI", async () => {
 	}
 });
 
-test("readRepoRecord recognizes only the protocol RecordNotFound response", async () => {
-	const missing = {
-		fetchHandler: async () => Response.json({ error: "RecordNotFound" }, { status: 400 }),
-	};
-	assert.equal(
-		await readRepoRecord(missing, { repo: "did:plc:rook", rkey: "vmlx-swift" }),
-		undefined,
-	);
+test("readRepoRecord treats the RecordNotFound error code as absence across status shapes", async () => {
+	// The XRPC error code is authoritative; the reference PDS returns 400 and
+	// rookery returns 404 for the same protocol condition.
+	for (const status of [400, 404]) {
+		const missing = {
+			fetchHandler: async () => Response.json({ error: "RecordNotFound" }, { status }),
+		};
+		assert.equal(
+			await readRepoRecord(missing, { repo: "did:plc:rook", rkey: "vmlx-swift" }),
+			undefined,
+		);
+	}
 	for (const response of [
-		Response.json({ error: "RecordNotFound" }, { status: 401 }),
 		Response.json({ error: "OtherError" }, { status: 400 }),
+		Response.json({ error: "OtherError" }, { status: 404 }),
 	]) {
 		await assert.rejects(
 			readRepoRecord(
