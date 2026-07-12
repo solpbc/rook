@@ -7,6 +7,7 @@ import { register as registerEnroll } from "./cmd/enroll.js";
 import { register as registerFork } from "./cmd/fork.js";
 import { register as registerLogin } from "./cmd/login.js";
 import { register as registerPr } from "./cmd/pr.js";
+import { register as registerProfile } from "./cmd/profile.js";
 import { register as registerPush } from "./cmd/push.js";
 import { register as registerShip } from "./cmd/ship.js";
 import { register as registerSubmit } from "./cmd/submit.js";
@@ -41,6 +42,7 @@ export function createProgram(dependencies = {}) {
 	registerPr(program, dependencies);
 	registerShip(program, dependencies);
 	registerSubmit(program, dependencies);
+	registerProfile(program, dependencies);
 	registerWhoami(program, dependencies);
 	registerDoctor(program, dependencies);
 	return program;

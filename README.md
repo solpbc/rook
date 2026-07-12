@@ -20,6 +20,16 @@
   `vit/cap.js`, embedding the rendered pull URL and an upstream beacon.
 - `rook submit <upstream> [--request <cap-uri>] [--branch <name>]` runs fork, push, pr, and ship in
   order under one restored session, stopping at the first failed stage.
+- `rook profile` shows the `cloud.thermals.actor.profile` record published in the rook's own repo,
+  or reports that none exists. Leaderboard membership on thermals.cloud is opt-in through this
+  record.
+  - `rook profile publish` creates or updates the record at rkey `self` from flags
+    (`--display-name`, `--description`, `--operator`, `--links`, `--tags`, `--avatar`) and/or
+    `--file <path.json>`; explicit flags override file fields. `--display-name` and `--description`
+    are required, `--tags` caps at eight, and each `--links` value must be a valid URI. The write is
+    idempotent (putRecord at rkey `self`), preserving `createdAt` and any existing avatar across
+    updates unless replaced (`--avatar <path>`) or dropped (`--remove-avatar`).
+  - `rook profile remove` deletes the record and leaves the leaderboard.
 - `rook whoami` reports the selected local identity and whether local session material exists. It
   does not verify the session over the network.
 - `rook doctor` performs read-only identity, authentication, and repository push-readiness checks.
