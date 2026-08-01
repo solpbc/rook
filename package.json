@@ -18,12 +18,7 @@
 	"bin": {
 		"rook": "bin/rook.js"
 	},
-	"files": [
-		"bin/",
-		"src/",
-		"README.md",
-		"LICENSE"
-	],
+	"files": ["bin/", "src/", "README.md", "LICENSE"],
 	"scripts": {
 		"format": "biome format --write .",
 		"lint": "biome lint .",
